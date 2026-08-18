@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Android 11(API 30) 이상에서 다른 앱을 찾아보기 위한 선언 -->
+    <queries>
+        <!-- 설치된 앱 목록 (버튼에 연결할 앱 고르기) -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- 말로 입력받기 -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <!-- 소리로 읽어 주기 -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <!-- 삼성 '모드 및 루틴' 설치 여부 확인 -->
+        <package android:name="com.samsung.android.app.routines" />
+    </queries>
+
+    <!-- 제미나이 API 호출을 위한 인터넷 권한 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- 포그라운드 서비스 및 알림 권한 (백그라운드 유지 필수) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 눌렀다는 느낌을 주는 짧은 진동 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- 배터리 절약 예외 설정 화면으로 안내하기 위한 권한 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- 부팅 시 자동 시작 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- 백그라운드에서 다른 앱을 실행하기 위한 권한 -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- USB 호스트(OTG) 기능 -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="true" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:mipmap/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:roundIcon="@android:mipmap/sym_def_app_icon"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.VibeKey">
+
+        <!-- 삼성 '모드 및 루틴'(Routines SDK v3)에 우리 앱이 연동 대상임을 알립니다. -->
+        <meta-data
+            android:name="com.samsung.android.app.routines.v3_support"
+            android:value="true" />
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- 기기가 케이블로 연결되면 앱을 자동으로 띄웁니다. -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
+        </activity>
+
+        <!-- AI 도우미 (제미나이) -->
+        <activity
+            android:name=".AiAssistantActivity"
+            android:exported="false"
+            android:label="@string/ai_title"
+            android:launchMode="singleTop" />
+
+        <!-- 버튼에 넣을 앱 고르기 -->
+        <activity
+            android:name=".AppPickerActivity"
+            android:exported="false"
+            android:label="@string/picker_title" />
+
+        <!-- 설정 -->
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings_title" />
+
+        <!-- 삼성 루틴 연결 안내 -->
+        <activity
+            android:name=".RoutineSetupActivity"
+            android:exported="false"
+            android:label="@string/routine_title" />
+
+        <!-- 테스트(자가진단) -->
+        <activity
+            android:name=".DiagnosticsActivity"
+            android:exported="false"
+            android:label="@string/test_title" />
+
+        <!--
+            삼성 루틴·자동화 앱이 부르는 "화면 없는" 실행 창구입니다.
+            루틴에서 앱 바로가기로 고르거나, vibekey:// 딥링크로 부를 수 있습니다.
+        -->
+        <activity
+            android:name=".RoutineActionActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.VibeKey.Invisible">
+
+            <!-- vibekey://run/1 , vibekey://ai , vibekey://speak?text=... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="vibekey" />
+            </intent-filter>
+
+            <intent-filter>
+                <action android:name="com.example.vibekey.action.RUN_BUTTON" />
+                <action android:name="com.example.vibekey.action.OPEN_AI" />
+                <action android:name="com.example.vibekey.action.ASK_AI" />
+                <action android:name="com.example.vibekey.action.SPEAK" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- USB 시리얼 모니터링 백그라운드 서비스 -->
+        <service
+            android:name=".UsbSerialService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- 부팅 완료 시 서비스 자동 구동 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            자동화 앱(태스커·매크로드로이드 등)이 브로드캐스트로 바이브키를 실행할 때 받는 곳.
+            사용자가 직접 정해 둔 앱만 열기 때문에 위험한 동작은 하지 않습니다.
+        -->
+        <receiver
+            android:name=".RoutineActionReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.example.vibekey.action.RUN_BUTTON" />
+                <action android:name="com.example.vibekey.action.OPEN_AI" />
+                <action android:name="com.example.vibekey.action.ASK_AI" />
+                <action android:name="com.example.vibekey.action.SPEAK" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+            삼성 '모드 및 루틴'이 동작(Action)을 실행할 때 호출하는 Provider.
+            삼성 루틴 앱만 가진 권한을 요구하므로 다른 앱은 호출할 수 없습니다.
+        -->
+        <provider
+            android:name=".RoutineActionProvider"
+            android:authorities="com.example.vibekey.routine.action"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="com.samsung.android.app.routines.permission.ROUTINE_ACTION">
+            <intent-filter>
+                <action android:name="com.samsung.android.app.routines.action.INTENT_ACTION" />
+            </intent-filter>
+
+            <meta-data
+                android:name="com.samsung.android.app.routines.action"
+                android:resource="@xml/routine_action" />
+            <meta-data
+                android:name="com.samsung.android.app.routines.condition"
+                android:resource="@xml/routine_condition" />
+        </provider>
+
+    </application>
+
+</manifest>

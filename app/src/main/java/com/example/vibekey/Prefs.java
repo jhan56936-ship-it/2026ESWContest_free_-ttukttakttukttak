@@ -1,0 +1,146 @@
+package com.example.vibekey;
+
+import android.content.Context;
+import android.content.SharedPreferences;
+import android.text.TextUtils;
+
+/**
+ * 앱 전체 설정을 한 곳에서 읽고 쓰기 위한 도우미 클래스입니다.
+ * 기존 버전에서 쓰던 저장 키("target_package_name" 등)를 그대로 유지해
+ * 업데이트해도 사용자가 지정해 둔 앱이 사라지지 않습니다.
+ */
+public final class Prefs {
+
+    public static final String PREFS_NAME = "VibeKeySettings";
+    public static final int SLOT_COUNT = 3;
+
+    private static final String KEY_GEMINI_API_KEY = "gemini_api_key";
+    private static final String KEY_VOICE_FEEDBACK = "voice_feedback";
+    private static final String KEY_HAPTIC = "haptic";
+    private static final String KEY_BIGGER_TEXT = "bigger_text";
+    private static final String KEY_ROUTINE_BROADCAST = "routine_broadcast";
+    private static final String KEY_ONBOARDED = "onboarded";
+    private static final String KEY_LAST_AI_ANSWER = "last_ai_answer";
+
+    private final SharedPreferences prefs;
+
+    private Prefs(Context context) {
+        this.prefs = context.getApplicationContext()
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+    }
+
+    public static Prefs with(Context context) {
+        return new Prefs(context);
+    }
+
+    // ---------------------------------------------------------------- 버튼 슬롯
+
+    public static String packageKey(int slot) {
+        return slot == 1 ? "target_package_name" : "target_package_name_" + slot;
+    }
+
+    public static String labelKey(int slot) {
+        return slot == 1 ? "target_app_label" : "target_app_label_" + slot;
+    }
+
+    public String getSlotPackage(int slot) {
+        String fallback = slot == 1 ? "com.google.android.apps.maps" : "";
+        return prefs.getString(packageKey(slot), fallback);
+    }
+
+    public String getSlotLabel(int slot) {
+        String fallback = slot == 1 ? "Google 지도" : "";
+        return prefs.getString(labelKey(slot), fallback);
+    }
+
+    public boolean hasSlot(int slot) {
+        return !TextUtils.isEmpty(getSlotPackage(slot));
+    }
+
+    public void setSlot(int slot, String packageName, String label) {
+        prefs.edit()
+                .putString(packageKey(slot), packageName)
+                .putString(labelKey(slot), label)
+                .apply();
+    }
+
+    public void clearSlot(int slot) {
+        prefs.edit()
+                .remove(packageKey(slot))
+                .remove(labelKey(slot))
+                .apply();
+    }
+
+    // ---------------------------------------------------------------- AI 설정
+
+    /** 설정 화면에서 넣은 키를 우선 사용하고, 없으면 빌드 시 주입된 기본 키를 씁니다. */
+    public String getGeminiApiKey() {
+        String saved = prefs.getString(KEY_GEMINI_API_KEY, "");
+        if (!TextUtils.isEmpty(saved)) {
+            return saved;
+        }
+        return BuildConfig.DEFAULT_GEMINI_API_KEY;
+    }
+
+    public void setGeminiApiKey(String key) {
+        prefs.edit().putString(KEY_GEMINI_API_KEY, key == null ? "" : key.trim()).apply();
+    }
+
+    public boolean hasGeminiApiKey() {
+        return !TextUtils.isEmpty(getGeminiApiKey());
+    }
+
+    public String getLastAiAnswer() {
+        return prefs.getString(KEY_LAST_AI_ANSWER, "");
+    }
+
+    public void setLastAiAnswer(String answer) {
+        prefs.edit().putString(KEY_LAST_AI_ANSWER, answer == null ? "" : answer).apply();
+    }
+
+    // ---------------------------------------------------------------- 사용 편의
+
+    public boolean isVoiceFeedbackOn() {
+        return prefs.getBoolean(KEY_VOICE_FEEDBACK, true);
+    }
+
+    public void setVoiceFeedbackOn(boolean on) {
+        prefs.edit().putBoolean(KEY_VOICE_FEEDBACK, on).apply();
+    }
+
+    public boolean isHapticOn() {
+        return prefs.getBoolean(KEY_HAPTIC, true);
+    }
+
+    public void setHapticOn(boolean on) {
+        prefs.edit().putBoolean(KEY_HAPTIC, on).apply();
+    }
+
+    public boolean isBiggerTextOn() {
+        return prefs.getBoolean(KEY_BIGGER_TEXT, false);
+    }
+
+    public void setBiggerTextOn(boolean on) {
+        prefs.edit().putBoolean(KEY_BIGGER_TEXT, on).apply();
+    }
+
+    // ---------------------------------------------------------------- 삼성 루틴
+
+    public boolean isRoutineBroadcastOn() {
+        return prefs.getBoolean(KEY_ROUTINE_BROADCAST, true);
+    }
+
+    public void setRoutineBroadcastOn(boolean on) {
+        prefs.edit().putBoolean(KEY_ROUTINE_BROADCAST, on).apply();
+    }
+
+    // ---------------------------------------------------------------- 첫 실행
+
+    public boolean isOnboarded() {
+        return prefs.getBoolean(KEY_ONBOARDED, false);
+    }
+
+    public void setOnboarded(boolean value) {
+        prefs.edit().putBoolean(KEY_ONBOARDED, value).apply();
+    }
+}
