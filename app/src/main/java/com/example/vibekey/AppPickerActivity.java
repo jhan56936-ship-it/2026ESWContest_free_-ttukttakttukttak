@@ -1,9 +1,9 @@
 package com.example.vibekey;
 
-import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.os.Bundle;
 import android.text.Editable;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.text.TextWatcher;
 import android.view.LayoutInflater;
@@ -11,12 +11,17 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.appcompat.app.AlertDialog;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
+
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -79,6 +84,28 @@ public class AppPickerActivity extends BaseActivity {
             }
         });
 
+        findViewById(R.id.btnQuickDial).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Haptics.tap(AppPickerActivity.this);
+                showQuickActionDialog("DIAL");
+            }
+        });
+        findViewById(R.id.btnQuickSms).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Haptics.tap(AppPickerActivity.this);
+                showQuickActionDialog("SMS");
+            }
+        });
+        findViewById(R.id.btnQuickMaps).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Haptics.tap(AppPickerActivity.this);
+                showQuickActionDialog("MAPS");
+            }
+        });
+
         EditText searchInput = findViewById(R.id.searchInput);
         searchInput.addTextChangedListener(new TextWatcher() {
             @Override
@@ -130,7 +157,7 @@ public class AppPickerActivity extends BaseActivity {
             return;
         }
 
-        final AlertDialog waiting = new AlertDialog.Builder(this)
+        final AlertDialog waiting = new MaterialAlertDialogBuilder(this)
                 .setMessage(getString(R.string.picker_ai_working))
                 .setCancelable(false)
                 .show();
@@ -174,7 +201,7 @@ public class AppPickerActivity extends BaseActivity {
 
         String question = (byAi ? "AI가 고른 앱이에요.\n\n" : "")
                 + "'" + found.label + "'을(를) " + slot + "번 버튼에 넣을까요?";
-        new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("이 앱이 맞나요?")
                 .setMessage(question)
                 .setPositiveButton("네, 넣어 주세요", new DialogInterface.OnClickListener() {
@@ -186,6 +213,102 @@ public class AppPickerActivity extends BaseActivity {
                 .setNegativeButton("아니요, 직접 고를래요", null)
                 .show();
         SpeechManager.get(this).speakIfEnabled(this, question);
+    }
+
+    // ------------------------------------------------------------------ 빠른 동작 (앱 대신 바로 실행)
+
+    /** 전화 걸기 · 문자 보내기 · 길찾기를 버튼에 넣기 위한 값(라벨·번호·내용)을 입력받습니다. */
+    private void showQuickActionDialog(final String type) {
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+
+        final EditText labelInput = new EditText(this);
+        labelInput.setHint("무엇으로 부를까요? (예: " + defaultLabelHint(type) + ")");
+        labelInput.setTextSize(20f);
+        labelInput.setMinHeight((int) (56 * getResources().getDisplayMetrics().density));
+        labelInput.setTextColor(ContextCompat.getColor(this, R.color.vk_text));
+
+        final EditText valueInput = new EditText(this);
+        valueInput.setHint("MAPS".equals(type) ? "목적지 (예: 서울역)" : "전화번호");
+        valueInput.setTextSize(20f);
+        valueInput.setMinHeight((int) (56 * getResources().getDisplayMetrics().density));
+        valueInput.setTextColor(ContextCompat.getColor(this, R.color.vk_text));
+        if ("DIAL".equals(type) || "SMS".equals(type)) {
+            valueInput.setInputType(InputType.TYPE_CLASS_PHONE);
+        }
+
+        final EditText textInput = new EditText(this);
+        textInput.setHint("보낼 말 (예: 도착하면 전화 주세요)");
+        textInput.setTextSize(20f);
+        textInput.setMinHeight((int) (56 * getResources().getDisplayMetrics().density));
+        textInput.setTextColor(ContextCompat.getColor(this, R.color.vk_text));
+
+        LinearLayout wrapper = new LinearLayout(this);
+        wrapper.setOrientation(LinearLayout.VERTICAL);
+        wrapper.setPadding(pad, pad, pad, 0);
+        wrapper.addView(labelInput);
+        addSpacer(wrapper, pad / 2);
+        wrapper.addView(valueInput);
+        if ("SMS".equals(type)) {
+            addSpacer(wrapper, pad / 2);
+            wrapper.addView(textInput);
+        }
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(quickActionTitle(type))
+                .setView(wrapper)
+                .setPositiveButton("넣기", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        String label = labelInput.getText().toString().trim();
+                        String value = valueInput.getText().toString().trim();
+                        String text = textInput.getText().toString().trim();
+                        saveQuickAction(type, label, value, text);
+                    }
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    private void addSpacer(LinearLayout wrapper, int height) {
+        View spacer = new View(this);
+        spacer.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, height));
+        wrapper.addView(spacer);
+    }
+
+    private String defaultLabelHint(String type) {
+        return "MAPS".equals(type) ? "회사" : "아들";
+    }
+
+    private String quickActionTitle(String type) {
+        switch (type) {
+            case "DIAL":
+                return "전화 걸기 넣기";
+            case "SMS":
+                return "문자 보내기 넣기";
+            default:
+                return "길찾기 넣기";
+        }
+    }
+
+    private void saveQuickAction(String type, String label, String value, String text) {
+        if (TextUtils.isEmpty(label) || TextUtils.isEmpty(value)) {
+            Toast.makeText(this, "이름과 " + ("MAPS".equals(type) ? "목적지" : "번호") + "를 모두 넣어 주세요.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        String number = "MAPS".equals(type) ? "" : value;
+        String actionText = "MAPS".equals(type) ? value : text;
+
+        Prefs.with(this).setSlotAction(slot, type, label, number, actionText);
+        RoutineBridge.refreshShortcuts(this);
+        Haptics.success(this);
+
+        String message = slot + "번 버튼에 '" + label + "'을(를) 넣었어요.";
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        SpeechManager.get(this).speakIfEnabled(this, message);
+        finish();
     }
 
     // ------------------------------------------------------------------ 고르기

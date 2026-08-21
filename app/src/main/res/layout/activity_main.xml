@@ -47,7 +47,8 @@
             android:gravity="center_vertical"
             android:minHeight="@dimen/touch_big"
             android:orientation="horizontal"
-            android:padding="@dimen/space_m">
+            android:padding="@dimen/space_m"
+            android:visibility="gone">
 
             <ImageView
                 android:id="@+id/statusIcon"

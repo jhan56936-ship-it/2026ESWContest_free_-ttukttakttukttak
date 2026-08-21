@@ -59,6 +59,59 @@
         android:gravity="center"
         android:text="@string/picker_ai_hint" />
 
+    <!-- 앱을 여는 대신 바로 실행할 동작 -->
+    <TextView
+        style="@style/VkText.Label"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_m"
+        android:gravity="center"
+        android:text="또는 바로 실행할 동작 고르기" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="@dimen/space_xs"
+        android:orientation="horizontal">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnQuickDial"
+            style="@style/VkButton.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="@dimen/space_xs"
+            android:layout_weight="1"
+            android:minHeight="@dimen/touch_min"
+            android:text="전화 걸기"
+            app:icon="@drawable/ic_phone"
+            app:iconGravity="textTop" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnQuickSms"
+            style="@style/VkButton.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_xs"
+            android:layout_marginEnd="@dimen/space_xs"
+            android:layout_weight="1"
+            android:minHeight="@dimen/touch_min"
+            android:text="문자 보내기"
+            app:icon="@drawable/ic_keyboard"
+            app:iconGravity="textTop" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnQuickMaps"
+            style="@style/VkButton.Outline"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="@dimen/space_xs"
+            android:layout_weight="1"
+            android:minHeight="@dimen/touch_min"
+            android:text="길찾기"
+            app:icon="@drawable/ic_search"
+            app:iconGravity="textTop" />
+    </LinearLayout>
+
     <!-- 글자로 찾기 -->
     <EditText
         android:id="@+id/searchInput"

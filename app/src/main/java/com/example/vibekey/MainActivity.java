@@ -1,6 +1,5 @@
 package com.example.vibekey;
 
-import android.app.AlertDialog;
 import android.app.KeyguardManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -18,8 +17,10 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.core.content.ContextCompat;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 import java.util.List;
 
@@ -162,15 +163,21 @@ public class MainActivity extends BaseActivity {
     /** 단추 하나를 눌렀을 때: 무엇을 할지 큰 글씨로 물어봅니다. */
     private void showSlotActionDialog(final int slot) {
         String appName = prefs.getSlotLabel(slot);
+        String actionType = prefs.getSlotActionType(slot);
         String title = getString(R.string.slot_title, slot);
-        String message = TextUtils.isEmpty(appName)
-                ? "이 단추에는 아직 앱이 없어요."
-                : "지금은 '" + appName + "'이(가) 열려요.";
+        String message;
+        if (TextUtils.isEmpty(appName)) {
+            message = "이 단추에는 아직 아무것도 없어요.";
+        } else if ("APP".equals(actionType)) {
+            message = "지금은 '" + appName + "'이(가) 열려요.";
+        } else {
+            message = "지금은 '" + appName + "'이(가) 실행돼요.";
+        }
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle(title)
                 .setMessage(message)
-                .setPositiveButton("앱 바꾸기", new DialogInterface.OnClickListener() {
+                .setPositiveButton("바꾸기", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface d, int which) {
                         startActivity(new Intent(MainActivity.this, AppPickerActivity.class)
@@ -184,8 +191,7 @@ public class MainActivity extends BaseActivity {
                     }
                 })
                 .setNegativeButton(R.string.close, null)
-                .create();
-        showBigDialog(dialog);
+                .show();
         SpeechManager.get(this).speakIfEnabled(this, title + ". " + message);
     }
 
@@ -198,9 +204,25 @@ public class MainActivity extends BaseActivity {
                 continue;
             }
 
-            String packageName = prefs.getSlotPackage(slot);
+            String actionType = prefs.getSlotActionType(slot);
             String label = prefs.getSlotLabel(slot);
 
+            if (!"APP".equals(actionType)) {
+                if (TextUtils.isEmpty(label)) {
+                    name.setText(R.string.slot_empty);
+                    name.setTextColor(ContextCompat.getColor(this, R.color.vk_text_secondary));
+                    icon.setImageResource(R.drawable.ic_apps);
+                    icon.setColorFilter(ContextCompat.getColor(this, R.color.vk_text_secondary));
+                } else {
+                    name.setText(label);
+                    name.setTextColor(ContextCompat.getColor(this, R.color.vk_text));
+                    icon.setImageResource(quickActionIcon(actionType));
+                    icon.setColorFilter(ContextCompat.getColor(this, R.color.vk_primary));
+                }
+                continue;
+            }
+
+            String packageName = prefs.getSlotPackage(slot);
             if (TextUtils.isEmpty(packageName)) {
                 name.setText(R.string.slot_empty);
                 name.setTextColor(ContextCompat.getColor(this, R.color.vk_text_secondary));
@@ -222,6 +244,19 @@ public class MainActivity extends BaseActivity {
                 name.setText((TextUtils.isEmpty(label) ? packageName : label) + "\n(지워짐)");
                 name.setTextColor(ContextCompat.getColor(this, R.color.vk_danger));
             }
+        }
+    }
+
+    private static int quickActionIcon(String actionType) {
+        switch (actionType) {
+            case "DIAL":
+                return R.drawable.ic_phone;
+            case "SMS":
+                return R.drawable.ic_keyboard;
+            case "MAPS":
+                return R.drawable.ic_search;
+            default:
+                return R.drawable.ic_apps;
         }
     }
 
@@ -271,7 +306,7 @@ public class MainActivity extends BaseActivity {
         }
         message.append("이대로 넣을까요?");
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("AI 추천")
                 .setMessage(message.toString())
                 .setPositiveButton("네, 넣어 주세요", new DialogInterface.OnClickListener() {
@@ -281,8 +316,7 @@ public class MainActivity extends BaseActivity {
                     }
                 })
                 .setNegativeButton("아니요", null)
-                .create();
-        showBigDialog(dialog);
+                .show();
         SpeechManager.get(this).speakIfEnabled(this, "추천을 준비했어요. 화면을 확인해 주세요.");
     }
 
@@ -311,7 +345,7 @@ public class MainActivity extends BaseActivity {
     }
 
     private void showNeedApiKeyDialog() {
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("AI 준비가 필요해요")
                 .setMessage(getString(R.string.ai_no_key))
                 .setPositiveButton("설정 열기", new DialogInterface.OnClickListener() {
@@ -321,8 +355,7 @@ public class MainActivity extends BaseActivity {
                     }
                 })
                 .setNegativeButton(R.string.close, null)
-                .create();
-        showBigDialog(dialog);
+                .show();
     }
 
     // ------------------------------------------------------------------ 상태 표시
@@ -332,6 +365,7 @@ public class MainActivity extends BaseActivity {
             @Override
             public void run() {
                 if (isConnected) {
+                    statusCard.setVisibility(View.VISIBLE);
                     statusTextView.setText(R.string.status_connected);
                     statusTextView.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.vk_success));
                     statusCard.setBackgroundResource(R.drawable.bg_status_ok);
@@ -340,13 +374,8 @@ public class MainActivity extends BaseActivity {
                     statusDescription.setText(TextUtils.isEmpty(description)
                             ? getString(R.string.status_hint_connected) : description);
                 } else {
-                    statusTextView.setText(R.string.status_disconnected);
-                    statusTextView.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.vk_danger));
-                    statusCard.setBackgroundResource(R.drawable.bg_status_bad);
-                    statusIcon.setImageResource(R.drawable.ic_alert);
-                    statusIcon.setColorFilter(ContextCompat.getColor(MainActivity.this, R.color.vk_danger));
-                    statusDescription.setText(TextUtils.isEmpty(description)
-                            ? getString(R.string.status_hint_disconnected) : description);
+                    // 연결 안 됨 경고는 더 이상 보여 주지 않습니다.
+                    statusCard.setVisibility(View.GONE);
                 }
             }
         });
@@ -386,7 +415,7 @@ public class MainActivity extends BaseActivity {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(this)) {
             return;
         }
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("한 가지만 허락해 주세요")
                 .setMessage("버튼을 눌렀을 때 앱이 저절로 열리려면\n'다른 앱 위에 표시' 허락이 필요합니다.\n\n"
                         + "설정으로 가서 '바이브키'를 켜 주세요.")
@@ -398,48 +427,24 @@ public class MainActivity extends BaseActivity {
                     }
                 })
                 .setNegativeButton("나중에", null)
-                .create();
-        showBigDialog(dialog);
+                .show();
     }
 
-    // ------------------------------------------------------------------ 큰 글씨 대화상자
-
-    /** 대화상자 글씨도 어르신 눈에 맞게 키웁니다. */
-    private void showBigDialog(final AlertDialog dialog) {
-        dialog.setOnShowListener(new DialogInterface.OnShowListener() {
-            @Override
-            public void onShow(DialogInterface d) {
-                TextView message = dialog.findViewById(android.R.id.message);
-                if (message != null) {
-                    message.setTextSize(20f);
-                    message.setTextColor(ContextCompat.getColor(MainActivity.this, R.color.vk_text));
-                }
-                if (dialog.getButton(AlertDialog.BUTTON_POSITIVE) != null) {
-                    dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextSize(20f);
-                }
-                if (dialog.getButton(AlertDialog.BUTTON_NEGATIVE) != null) {
-                    dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextSize(20f);
-                }
-            }
-        });
-        dialog.show();
-    }
+    // ------------------------------------------------------------------ 대화상자 도우미
 
     private void showMessageDialog(String title, String message) {
-        showBigDialog(new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle(title)
                 .setMessage(message)
                 .setPositiveButton(R.string.ok, null)
-                .create());
+                .show();
     }
 
     private AlertDialog showWaitingDialog(String message) {
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        return new MaterialAlertDialogBuilder(this)
                 .setMessage(message)
                 .setCancelable(false)
-                .create();
-        showBigDialog(dialog);
-        return dialog;
+                .show();
     }
 
     private void dismiss(AlertDialog dialog) {

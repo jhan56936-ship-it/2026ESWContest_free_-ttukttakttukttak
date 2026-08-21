@@ -18,6 +18,20 @@
         </intent>
         <!-- 삼성 '모드 및 루틴' 설치 여부 확인 -->
         <package android:name="com.samsung.android.app.routines" />
+
+        <!-- 빠른 동작: 전화 걸기 / 문자 보내기 / 길찾기 (표준 인텐트만 사용) -->
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="geo" />
+        </intent>
     </queries>
 
     <!-- 제미나이 API 호출을 위한 인터넷 권한 -->
