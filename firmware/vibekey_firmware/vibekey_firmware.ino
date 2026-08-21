@@ -1,0 +1,368 @@
+/*
+ * ============================================================================
+ *  바이브키(Vibe-key) 기기 펌웨어  ·  Seeed Studio XIAO ESP32-S3
+ * ============================================================================
+ *
+ *  이 펌웨어가 하는 일 (= 폰이 못 하는 일)
+ *  ---------------------------------------------------------------------------
+ *  2.0까지 기기는 "GPIO를 읽어 'True\n' 을 뱉는 전선"이었고, 신호 해석·떨림
+ *  방지·실행 판단이 전부 안드로이드에 있었습니다. 3.0에서는 신뢰에 관한 판단을
+ *  전부 기기로 내렸습니다.
+ *
+ *    1. 입력 판정   ISR → 큐 → 상태머신(디바운스·짧게/길게·떨림 가드)  [press_fsm.h]
+ *    2. 전송 신뢰   프레임 + CRC8 + SEQ + ACK + 재전송 3회             [vkp_frame.h]
+ *    3. 촉각 응답   눌림/성공/실패를 서로 다른 진동으로 손끝에 대답     [haptics.h]
+ *
+ *  폰이 잠들어 있거나 앱이 죽어 ACK가 세 번 다 실패하면, 기기가 스스로 길게
+ *  진동해 "지금 안 되고 있다"를 알립니다. 어르신은 화면을 보지 않고도 압니다.
+ *
+ *  태스크 구성 (모두 core 1, Wi-Fi 없이 동작)
+ *  ---------------------------------------------------------------------------
+ *   이름        우선순위  주기      스택   하는 일
+ *   inputTask      4     10ms     3072B  ISR 큐를 비우고 누름 종류를 확정
+ *   protoTask      3      5ms     4096B  프레임 송신·ACK 대기·재전송·수신 해석
+ *   hapticTask     2     이벤트   2048B  진동 패턴 재생 (LEDC PWM)
+ *
+ *  아두이노 IDE 설정
+ *  ---------------------------------------------------------------------------
+ *   보드            : XIAO_ESP32S3  (Seeed Studio XIAO ESP32S3)
+ *   USB CDC On Boot : Enabled   ← 이걸 켜야 Serial이 네이티브 USB(CDC)로 나갑니다
+ *   USB Mode        : USB-OTG (TinyUSB)  또는 Hardware CDC and JTAG
+ *   Upload Mode     : USB-OTG CDC
+ *   추가 라이브러리  : 없음 (ESP32 Arduino 코어만 있으면 빌드됩니다)
+ *
+ *  회로·부품·핀맵은 firmware/README.md 에 표로 정리해 두었습니다.
+ * ============================================================================
+ */
+
+#include <Arduino.h>
+#include "vkp_frame.h"
+#include "press_fsm.h"
+#include "haptics.h"
+
+using namespace vkp;
+
+// ---------------------------------------------------------------- 버전 / 설정
+
+static const uint8_t FW_MAJOR = 3;
+static const uint8_t FW_MINOR = 0;
+
+/** 버튼 접점 → 프레임 송출 지연을 로직 애널라이저로 재기 위한 관측 핀 */
+#define VK_LATENCY_PROBE 1
+
+/** ACK를 못 받았을 때 다시 보내는 간격과 횟수 */
+static const uint16_t ACK_TIMEOUT_MS = 150;
+static const uint8_t  MAX_RETRY      = 3;
+
+// ---------------------------------------------------------------- 핀맵
+//  XIAO ESP32-S3 (D 표기 → 실제 GPIO)
+//   D0=1  D1=2  D2=3  D3=4  D4=5  D5=6  D6=43(TX) D7=44(RX) D8=7  D9=8  D10=9
+//
+//  D2(GPIO3)는 부팅 스트래핑 핀, D6/D7은 UART라 버튼에서 뺐습니다.
+
+static const uint8_t BUTTON_COUNT = 3;
+static const uint8_t BUTTON_PINS[BUTTON_COUNT] = {
+    2,   // D1  — 1번 버튼
+    4,   // D3  — 2번 버튼
+    7    // D8  — 3번 버튼
+};
+static const uint8_t MOTOR_PIN = 1;   // D0  — 진동 모터 (MOSFET 게이트)
+static const uint8_t PROBE_PIN = 9;   // D10 — 지연 측정용 관측 핀
+
+// ---------------------------------------------------------------- 큐 / 상태
+
+/** ISR이 남기는 최소 정보. ISR 안에서는 이것만 하고 즉시 빠져나옵니다. */
+struct EdgeMsg {
+    uint8_t  index;    // 버튼 번호 - 1
+    uint8_t  level;    // 핀 전압 (풀업이므로 0 = 눌림)
+    uint32_t stampUs;  // 접점이 바뀐 시각
+};
+
+/** 입력 태스크가 확정한 "사람이 의도한 누름" */
+struct PressMsg {
+    uint8_t  button;   // 1~3
+    uint8_t  kind;     // K_SHORT / K_LONG / K_DOUBLE
+    uint32_t stampUs;  // 판정 근거가 된 접점 시각 (지연 계산의 기준점)
+};
+
+static QueueHandle_t edgeQueue   = nullptr;
+static QueueHandle_t pressQueue  = nullptr;
+static QueueHandle_t hapticQueue = nullptr;
+
+static PressFsm  fsm[BUTTON_COUNT];
+static Decoder   rx;
+
+/** 보고서에 그대로 넣을 수 있는 실측 카운터 */
+static struct {
+    uint16_t sent;          // 보낸 이벤트 프레임 수
+    uint16_t retx;          // 재전송 횟수
+    uint16_t ackTimeout;    // 세 번 다 실패한 횟수
+    uint16_t lastLatencyUs; // 마지막 접점→송출 지연
+    uint16_t maxLatencyUs;  // 최악값
+} stats = {0, 0, 0, 0, 0};
+
+// ---------------------------------------------------------------- ISR
+
+/**
+ * 버튼 인터럽트. 여기서 하는 일은 "언제·어디서 바뀌었는지"를 큐에 넣는 것뿐입니다.
+ * 판단은 전부 태스크에서 합니다 (ISR을 짧게 유지해야 지연이 흔들리지 않습니다).
+ */
+static void IRAM_ATTR onButtonEdge(void* arg) {
+    EdgeMsg msg;
+    msg.index   = (uint8_t)(uint32_t)arg;
+    msg.level   = (uint8_t)digitalRead(BUTTON_PINS[msg.index]);
+    msg.stampUs = micros();
+
+#if VK_LATENCY_PROBE
+    // 손을 떼는 순간(풀업이 다시 HIGH로 올라오는 접점 = 짧게 누름이 확정되는 시점)에
+    // 관측 핀을 올리고, 프레임을 다 보낸 뒤 내립니다. 로직 애널라이저에서 이 펄스
+    // 폭을 그대로 읽으면 "버튼 접점 → USB 프레임 송출" 지연이 됩니다.
+    if (msg.level == HIGH) {
+        digitalWrite(PROBE_PIN, HIGH);
+    }
+#endif
+
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(edgeQueue, &msg, &woken);
+    if (woken == pdTRUE) {
+        portYIELD_FROM_ISR();
+    }
+}
+
+// ---------------------------------------------------------------- 진동 태스크
+
+static void enqueueHaptic(uint8_t pattern) {
+    if (pattern != P_NONE && hapticQueue != nullptr) {
+        xQueueSend(hapticQueue, &pattern, 0);
+    }
+}
+
+static void hapticTask(void* /*arg*/) {
+    hapticBegin(MOTOR_PIN);
+    uint8_t pattern;
+    for (;;) {
+        if (xQueueReceive(hapticQueue, &pattern, portMAX_DELAY) == pdTRUE) {
+            const HapticStep* step = hapticPattern(pattern);
+            if (step == nullptr) {
+                continue;
+            }
+            // {duty, ms} 단계를 그대로 밟아 나갑니다. delay()가 아니라 vTaskDelay라
+            // 진동 중에도 버튼·시리얼은 계속 살아 있습니다.
+            for (uint8_t i = 0; i < HAPTIC_MAX_STEPS; i++) {
+                if (step[i].ms == 0) {
+                    break;
+                }
+                hapticDuty(MOTOR_PIN, step[i].duty);
+                vTaskDelay(pdMS_TO_TICKS(step[i].ms));
+            }
+            hapticDuty(MOTOR_PIN, 0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 입력 태스크
+
+static void inputTask(void* /*arg*/) {
+    EdgeMsg edge;
+    for (;;) {
+        // 1) ISR이 쌓아 둔 접점 변화를 모두 처리
+        while (xQueueReceive(edgeQueue, &edge, 0) == pdTRUE) {
+            uint8_t kind;
+            bool down = (edge.level == LOW);          // 풀업: LOW = 눌림
+
+            // 상태머신은 ms 로 판단하는데 ISR은 us 로 찍습니다. micros()는 약 71분마다
+            // 한 바퀴 돌아 millis()와 어긋나므로, "지금으로부터 얼마나 지난 접점인지"를
+            // 빼는 방식으로 옮깁니다(부호 없는 뺄셈이라 자릿수가 넘어가도 정확합니다).
+            uint32_t ageMs  = (uint32_t)(micros() - edge.stampUs) / 1000;
+            uint32_t edgeMs = millis() - ageMs;
+
+            if (fsm[edge.index].onEdge(down, edgeMs, kind)) {
+                PressMsg press = {(uint8_t)(edge.index + 1), kind, edge.stampUs};
+                xQueueSend(pressQueue, &press, 0);
+            }
+        }
+
+        // 2) 누르고 있는 동안의 "길게 누름" 확정
+        uint32_t nowMs = millis();
+        for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+            uint8_t kind;
+            if (fsm[i].tick(nowMs, kind)) {
+                PressMsg press = {(uint8_t)(i + 1), kind, micros()};
+                xQueueSend(pressQueue, &press, 0);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// ---------------------------------------------------------------- 프로토콜 태스크
+
+static uint8_t nextSeq() {
+    static uint8_t seq = 0;
+    seq++;
+    if (seq == 0) {
+        seq = 1;                                  // 0은 "시퀀스 없음"이라 건너뜁니다
+    }
+    return seq;
+}
+
+static void writeFrame(uint8_t seq, uint8_t type, const uint8_t* payload, uint8_t len) {
+    uint8_t buf[MAX_FRAME];
+    uint8_t n = encode(seq, type, payload, len, buf);
+    if (n == 0) {
+        return;
+    }
+    Serial.write(buf, n);
+    Serial.flush();
+}
+
+static void sendHello() {
+    uint8_t p[5] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, 0x01 /*진동 있음*/};
+    writeFrame(0, T_HELLO, p, sizeof(p));
+}
+
+static void sendStats() {
+    uint16_t crcErr = (uint16_t)rx.crcErrors;
+    uint16_t up     = (uint16_t)(millis() / 1000);
+    uint8_t p[10] = {
+        (uint8_t)(stats.sent & 0xFF),        (uint8_t)(stats.sent >> 8),
+        (uint8_t)(stats.retx & 0xFF),        (uint8_t)(stats.retx >> 8),
+        (uint8_t)(stats.ackTimeout & 0xFF),  (uint8_t)(stats.ackTimeout >> 8),
+        (uint8_t)(crcErr & 0xFF),            (uint8_t)(crcErr >> 8),
+        (uint8_t)(up & 0xFF),                (uint8_t)(up >> 8)
+    };
+    writeFrame(0, T_STATS, p, sizeof(p));
+}
+
+static void protoTask(void* /*arg*/) {
+    PressMsg  pending;                 // ACK를 기다리는 중인 이벤트
+    bool      waitingAck = false;
+    uint8_t   pendingSeq = 0;
+    uint8_t   retry      = 0;
+    uint32_t  sentAtMs   = 0;
+    bool      linkUp     = false;
+
+    for (;;) {
+        // --- 1. 폰이 연결됐는지 (USB CDC의 DTR) ---
+        bool nowUp = (bool)Serial;
+        if (nowUp != linkUp) {
+            linkUp = nowUp;
+            if (linkUp) {
+                rx.reset();
+                sendHello();
+                enqueueHaptic(P_LINK);      // "폰이랑 이어졌어요"
+            }
+        }
+
+        // --- 2. 폰이 보낸 바이트 해석 ---
+        Frame f;
+        while (Serial.available() > 0) {
+            uint8_t b = (uint8_t)Serial.read();
+            if (!rx.push(b, f)) {
+                continue;
+            }
+            switch (f.type) {
+                case T_ACK:
+                    if (waitingAck && f.u8(0) == pendingSeq) {
+                        waitingAck = false;         // 잘 도착했음 — 재전송 중단
+                    }
+                    break;
+                case T_FEEDBACK:
+                    enqueueHaptic(f.u8(0));         // 실행 성공/실패를 손끝으로
+                    break;
+                case T_PING:
+                    sendHello();
+                    sendStats();
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        // --- 3. 확정된 누름을 프레임으로 내보내기 ---
+        if (!waitingAck && xQueueReceive(pressQueue, &pending, 0) == pdTRUE) {
+            enqueueHaptic(hapticForPress(pending.button, pending.kind));  // 먼저 "눌렸어요"
+
+            uint32_t latency = micros() - pending.stampUs;
+            if (latency > 65535) {
+                latency = 65535;
+            }
+            stats.lastLatencyUs = (uint16_t)latency;
+            if (latency > stats.maxLatencyUs) {
+                stats.maxLatencyUs = (uint16_t)latency;
+            }
+
+            uint8_t p[4] = {pending.button, pending.kind,
+                            (uint8_t)(latency & 0xFF), (uint8_t)(latency >> 8)};
+            pendingSeq = nextSeq();
+            writeFrame(pendingSeq, T_EVT_PRESS, p, sizeof(p));
+
+#if VK_LATENCY_PROBE
+            digitalWrite(PROBE_PIN, LOW);   // 관측 핀 펄스 끝 = 송출 완료
+#endif
+            stats.sent++;
+            waitingAck = true;
+            retry = 0;
+            sentAtMs = millis();
+        }
+
+        // --- 4. ACK가 안 오면 다시 보내고, 세 번 다 실패하면 진동으로 알림 ---
+        if (waitingAck && (uint32_t)(millis() - sentAtMs) >= ACK_TIMEOUT_MS) {
+            if (retry < MAX_RETRY - 1) {
+                retry++;
+                stats.retx++;
+                uint32_t latency = stats.lastLatencyUs;
+                uint8_t p[4] = {pending.button, pending.kind,
+                                (uint8_t)(latency & 0xFF), (uint8_t)(latency >> 8)};
+                writeFrame(pendingSeq, T_EVT_PRESS, p, sizeof(p));  // SEQ 그대로 = 폰이 중복 실행 안 함
+                sentAtMs = millis();
+            } else {
+                waitingAck = false;
+                stats.ackTimeout++;
+                enqueueHaptic(P_LOST);      // "지금 폰이 못 받고 있어요"
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+}
+
+// ---------------------------------------------------------------- setup / loop
+
+void setup() {
+    Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
+    // 폰이 안 꽂혀 있을 때 Serial.write가 무한정 붙들리지 않게 합니다.
+    // (이게 없으면 케이블을 뺀 채 버튼을 누를 때 태스크가 멈춰 버립니다.)
+    Serial.setTxTimeoutMs(20);
+#endif
+
+    for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+        pinMode(BUTTON_PINS[i], INPUT_PULLUP);
+    }
+#if VK_LATENCY_PROBE
+    pinMode(PROBE_PIN, OUTPUT);
+    digitalWrite(PROBE_PIN, LOW);
+#endif
+
+    edgeQueue   = xQueueCreate(32, sizeof(EdgeMsg));
+    pressQueue  = xQueueCreate(8,  sizeof(PressMsg));
+    hapticQueue = xQueueCreate(8,  sizeof(uint8_t));
+
+    // 진동 → 입력 → 프로토콜 순으로 띄웁니다. 모두 core 1 (core 0은 USB·시스템용).
+    xTaskCreatePinnedToCore(hapticTask, "haptic", 2048, nullptr, 2, nullptr, 1);
+    xTaskCreatePinnedToCore(inputTask,  "input",  3072, nullptr, 4, nullptr, 1);
+    xTaskCreatePinnedToCore(protoTask,  "proto",  4096, nullptr, 3, nullptr, 1);
+
+    // 큐와 태스크가 준비된 뒤에 인터럽트를 붙입니다(먼저 붙이면 큐가 없어 죽습니다).
+    for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+        attachInterruptArg(digitalPinToInterrupt(BUTTON_PINS[i]),
+                           onButtonEdge, (void*)(uint32_t)i, CHANGE);
+    }
+}
+
+void loop() {
+    // 실제 일은 전부 태스크가 합니다. 기본 loop 태스크는 잠들어 있게 둡니다.
+    vTaskDelay(pdMS_TO_TICKS(1000));
+}

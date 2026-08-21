@@ -31,15 +31,30 @@ import com.hoho.android.usbserial.util.SerialInputOutputManager;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
- * 버튼 기기(ESP32-S3 등)와 USB로 이어져 신호를 기다리는 백그라운드 서비스입니다.
+ * 버튼 기기(ESP32-S3)와 USB로 이어져 신호를 주고받는 백그라운드 서비스입니다.
  *
- * 기기가 보내는 신호
- *   "True", "Button1", "Button2", "Button3" → 해당 버튼에 연결된 앱 실행
- *   "AI", "Long1", "ButtonLong1"            → AI 도우미 화면 열기 (말로 물어보기)
+ * <h3>3.0에서 달라진 것 — 한 방향에서 두 방향으로</h3>
+ * 2.0까지 이 서비스는 기기가 뱉는 평문 한 줄을 받아 읽기만 했고, 손 떨림 방지(3초 디바운스)
+ * 같은 안전장치도 전부 여기 있었습니다. 폰이 바쁘면 그대로 무너지는 구조였습니다.
+ * 3.0에서는 판단을 기기로 내리고, 이 서비스는 <b>주고받는 쪽</b>이 되었습니다.
  *
- * 버튼이 눌리면 앱 실행뿐 아니라 삼성 루틴에도 신호를 보내 줍니다.
+ * <pre>
+ *   기기 → 폰   EVT_PRESS  어느 버튼을 어떻게 눌렀는지 (+ 기기가 잰 지연 us)
+ *               HELLO      펌웨어 버전·버튼 수
+ *               STATS      보낸 수·재전송 수·ACK 실패 수 (실측값)
+ *   폰 → 기기   ACK        "잘 받았다" — 이게 없으면 기기가 세 번까지 다시 보냅니다
+ *               FEEDBACK   "앱이 열렸다 / 못 열었다" — 기기가 서로 다른 진동으로 알려 줍니다
+ *               PING       상태를 물어봄 (자가진단 화면에서 사용)
+ * </pre>
+ *
+ * 덕분에 어르신은 화면을 보지 않고도 <b>눌렸는지 · 됐는지 · 안 됐는지</b>를 손끝으로 압니다.
+ * 옛 펌웨어("True\n")를 올린 기기도 그대로 동작합니다 —
+ * 프레임이 아닌 바이트는 {@link FrameCodec.Decoder}가 따로 넘겨 주고, 예전 방식으로 해석합니다.
  */
 public class UsbSerialService extends Service implements SerialInputOutputManager.Listener {
 
@@ -48,14 +63,31 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     private static final String CHANNEL_ID = "UsbSerialMonitorChannel";
     private static final int NOTIFICATION_ID = 999;
 
-    /** 같은 버튼을 실수로 여러 번 눌러도 한 번만 실행되게 합니다. (손 떨림 대비) */
+    /**
+     * 옛 평문 신호("True")를 쓰는 기기에만 적용하는 디바운스입니다.
+     * 3.0 프레임 신호는 기기 쪽 상태머신이 떨림을 걸러 내고, 여기서는 SEQ로 중복을 막기 때문에
+     * 이 시간에 기대지 않습니다. (기기 쪽 값: press_fsm.h 의 repeatGuardMs)
+     */
     private static final long DEBOUNCE_DELAY_MS = 3000;
 
     private UsbManager usbManager;
     private UsbSerialPort usbSerialPort;
     private SerialInputOutputManager usbIoManager;
 
+    /** 프레임이 아닌 바이트(= 옛 평문)를 모아 두었다가 줄 단위로 해석합니다. */
     private final StringBuilder incomingBuffer = new StringBuilder();
+
+    /** 들어온 바이트에서 온전한 프레임만 골라 내는 해석기 */
+    private final FrameCodec.Decoder frameDecoder = new FrameCodec.Decoder();
+
+    /** 시리얼 쓰기는 블로킹이라 서비스 스레드를 붙들지 않도록 따로 돌립니다. */
+    private ExecutorService writer;
+
+    /** 마지막으로 실행한 프레임의 SEQ. 기기가 재전송해 와도 두 번 실행하지 않기 위한 표시입니다. */
+    private int lastPressSeq = -1;
+
+    /** 시리얼 쓰기 제한 시간(ms). 기기가 빠진 순간 스레드가 붙들리지 않게 짧게 둡니다. */
+    private static final int WRITE_TIMEOUT_MS = 200;
 
     /** 버튼별로 마지막 실행 시각을 따로 기록합니다. */
     private final long[] lastLaunchTime = new long[Prefs.SLOT_COUNT + 1];
@@ -71,6 +103,15 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
      */
     public static final String ACTION_SIMULATE_SIGNAL = "com.example.vibekey.SIMULATE_SIGNAL";
     public static final String EXTRA_SIGNAL = "signal";
+
+    /** 3.0 프레임을 그대로 만들어 넣어 보는 시험용 명령입니다. (자가진단 화면) */
+    public static final String ACTION_SIMULATE_FRAME = "com.example.vibekey.SIMULATE_FRAME";
+    public static final String EXTRA_BUTTON = "button";
+    public static final String EXTRA_KIND = "kind";
+    public static final String EXTRA_CORRUPT = "corrupt";
+
+    /** 시험용 프레임에 붙일 시퀀스 번호 */
+    private int simulationSeq = 0;
 
     private boolean isConnected = false;
     private boolean isForegroundStarted = false;
@@ -102,6 +143,8 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     public void onCreate() {
         super.onCreate();
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
+        writer = Executors.newSingleThreadExecutor();
+        decoderSnapshot = frameDecoder;
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_USB_PERMISSION);
@@ -157,6 +200,25 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         }
     }
 
+    /**
+     * 3.0 펌웨어가 보내는 것과 똑같은 프레임을 만들어 실제 수신 경로에 넣습니다.
+     *
+     * @param corrupt true 면 비트 하나를 일부러 뒤집습니다. 이때 앱이 <b>아무 일도 하지 않아야</b>
+     *                맞습니다. "깨진 신호는 실행되지 않는다"를 기기 없이 눈으로 보여 주는 시험입니다.
+     */
+    public static void simulateFrame(Context context, int button, int kind, boolean corrupt) {
+        Intent intent = new Intent(context, UsbSerialService.class)
+                .setAction(ACTION_SIMULATE_FRAME)
+                .putExtra(EXTRA_BUTTON, button)
+                .putExtra(EXTRA_KIND, kind)
+                .putExtra(EXTRA_CORRUPT, corrupt);
+        try {
+            context.startService(intent);
+        } catch (Exception e) {
+            Log.w(TAG, "Could not deliver test frame: " + e.getMessage());
+        }
+    }
+
     /** USB 기기가 하나라도 꽂혀 있는지 확인합니다. */
     public static boolean hasUsbDevice(Context context) {
         UsbManager manager = (UsbManager) context.getSystemService(Context.USB_SERVICE);
@@ -172,6 +234,10 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                 resetDebounce();
                 handleSerialLine(signal);
             }
+        } else if (intent != null && ACTION_SIMULATE_FRAME.equals(intent.getAction())) {
+            injectTestFrame(intent.getIntExtra(EXTRA_BUTTON, 1),
+                    intent.getIntExtra(EXTRA_KIND, FrameCodec.K_SHORT),
+                    intent.getBooleanExtra(EXTRA_CORRUPT, false));
         }
         // 서비스가 강제 종료되더라도 시스템이 자동으로 다시 켜 줍니다.
         return START_STICKY;
@@ -195,6 +261,10 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     public void onDestroy() {
         super.onDestroy();
         disconnectUsbDevice();
+        if (writer != null) {
+            writer.shutdownNow();
+            writer = null;
+        }
         try {
             unregisterReceiver(usbReceiver);
         } catch (IllegalArgumentException e) {
@@ -350,9 +420,18 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
             usbIoManager = new SerialInputOutputManager(usbSerialPort, this);
             usbIoManager.start();
 
+            // 이어 붙은 시점의 반쪽짜리 바이트를 들고 있지 않도록 해석기를 비웁니다.
+            frameDecoder.reset();
+            lastPressSeq = -1;
+            deviceInfo = null;
+            deviceStats = null;
+
             // 기기가 실제로 붙었으니 이제 상시 알림으로 격상해도 됩니다.
             startForegroundNotification();
             broadcastStatus(true, "이제 버튼을 누르시면 앱이 열려요.");
+
+            // 3.0 펌웨어라면 HELLO+STATS로 답합니다. 옛 펌웨어는 무시하고 지나갑니다.
+            sendFrame(0, FrameCodec.T_PING, null);
 
         } catch (IOException e) {
             broadcastStatus(false, "연결에 실패했어요. 케이블을 다시 꽂아 주세요.");
@@ -401,11 +480,119 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         }
     }
 
-    // ------------------------------------------------------------------ 신호 해석
+    // ------------------------------------------------------------------ 신호 받기
 
+    /**
+     * 들어온 바이트를 프레임 해석기에 그대로 흘려 넣습니다.
+     *
+     * 해석기는 두 갈래로 나눠 돌려 줍니다.
+     *   onFrame      — CRC까지 통과한 온전한 프레임 (3.0 펌웨어)
+     *   onStrayBytes — 프레임이 아니었던 바이트 (잡음, 또는 옛 펌웨어의 평문)
+     * 덕분에 새 펌웨어와 옛 펌웨어를 한 경로에서 함께 받을 수 있습니다.
+     */
     @Override
     public void onNewData(byte[] data) {
-        String incomingText = new String(data, StandardCharsets.UTF_8);
+        frameDecoder.push(data, data.length, serialSink);
+    }
+
+    private final FrameCodec.Sink serialSink = new FrameCodec.Sink() {
+        @Override
+        public void onFrame(FrameCodec.Frame frame) {
+            handleFrame(frame);
+        }
+
+        @Override
+        public void onStrayBytes(byte[] bytes) {
+            handleLegacyBytes(bytes);
+        }
+    };
+
+    // ------------------------------------------------------------------ 프레임 해석
+
+    private void handleFrame(FrameCodec.Frame frame) {
+        switch (frame.type) {
+            case FrameCodec.T_EVT_PRESS:
+                handlePressFrame(frame);
+                break;
+            case FrameCodec.T_HELLO:
+                deviceInfo = String.format(Locale.KOREA, "펌웨어 %d.%d · 버튼 %d개 · 프로토콜 v%d",
+                        frame.u8(1), frame.u8(2), frame.u8(3), frame.u8(0));
+                SerialLog.add(this, "HELLO", deviceInfo);
+                break;
+            case FrameCodec.T_STATS:
+                deviceStats = String.format(Locale.KOREA,
+                        "기기가 보낸 %d개 · 재전송 %d회 · 응답 못 받음 %d회 · 기기 쪽 CRC 오류 %d · 켜진 지 %d초",
+                        frame.u16(0), frame.u16(2), frame.u16(4), frame.u16(6), frame.u16(8));
+                SerialLog.add(this, "STATS", deviceStats);
+                break;
+            default:
+                SerialLog.add(this, frame.toString(), "모르는 종류의 프레임 (무시함)");
+                break;
+        }
+    }
+
+    /**
+     * 버튼 누름 프레임 처리. 순서가 중요합니다.
+     *
+     *  1. <b>먼저 ACK</b> — 기기의 재전송을 곧바로 멈춥니다. 앱을 여는 데 몇백 ms가 걸릴 수
+     *     있는데 그동안 기다리게 하면 기기가 "못 받았다"고 오해해 같은 신호를 또 보냅니다.
+     *  2. <b>같은 SEQ면 실행하지 않음</b> — ACK가 도중에 유실돼 기기가 다시 보낸 경우입니다.
+     *     같은 누름이므로 앱을 두 번 열면 안 됩니다. (2.0의 3초 디바운스를 대신하는 장치)
+     *  3. <b>실행한 뒤 결과를 진동으로</b> — 성공/실패를 서로 다른 패턴으로 기기에 돌려줍니다.
+     */
+    private void handlePressFrame(FrameCodec.Frame frame) {
+        sendFrame(0, FrameCodec.T_ACK, new byte[]{(byte) frame.seq});
+
+        if (frame.seq == lastPressSeq) {
+            SerialLog.add(this, frame.toString(), "같은 신호 다시 옴 — 한 번만 실행 (SEQ " + frame.seq + ")");
+            return;
+        }
+        lastPressSeq = frame.seq;
+
+        SignalParser.Result result = SignalParser.fromFrame(frame);
+        if (result.latencyUs >= 0) {
+            lastLatencyUs = result.latencyUs;
+            if (result.latencyUs > maxLatencyUs) {
+                maxLatencyUs = result.latencyUs;
+            }
+        }
+        String detail = describe(result);
+
+        switch (result.action) {
+            case OPEN_AI:
+                SerialLog.add(this, frame.toString(), detail);
+                openAiAssistant();
+                sendFeedback(FrameCodec.P_OK);
+                break;
+            case RUN_SLOT:
+                SerialLog.add(this, frame.toString(), detail);
+                launchSlot(result.slot, true);
+                break;
+            default:
+                SerialLog.add(this, frame.toString(), "알 수 없는 신호 (무시함)");
+                break;
+        }
+    }
+
+    /** 기록 화면에 남길 설명. 기기가 잰 지연을 함께 적어 두면 나중에 그대로 근거가 됩니다. */
+    private String describe(SignalParser.Result result) {
+        String what = result.action == SignalParser.Action.OPEN_AI
+                ? "AI 도우미 열기 (길게 누름)"
+                : result.slot + "번 버튼 실행";
+        if (result.latencyUs >= 0) {
+            what += String.format(Locale.KOREA, " · 기기 지연 %.2fms", result.latencyUs / 1000.0);
+        }
+        return what;
+    }
+
+    // ------------------------------------------------------------------ 옛 평문 신호
+
+    /**
+     * 프레임이 아니었던 바이트입니다. 2.0 이하 펌웨어를 올린 기기는 여기로 들어옵니다.
+     * 이 경로에는 CRC도 SEQ도 없으므로, 예전처럼 3초 디바운스로만 떨림을 막습니다.
+     */
+    private void handleLegacyBytes(byte[] bytes) {
+        String incomingText = new String(bytes, StandardCharsets.UTF_8);
         synchronized (incomingBuffer) {
             incomingBuffer.append(incomingText);
             int newlineIndex;
@@ -413,6 +600,10 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                 String line = incomingBuffer.substring(0, newlineIndex).trim();
                 incomingBuffer.delete(0, newlineIndex + 1);
                 handleSerialLine(line);
+            }
+            // 줄바꿈 없이 잡음만 계속 들어오는 경우에 버퍼가 무한히 자라지 않게 합니다.
+            if (incomingBuffer.length() > 512) {
+                incomingBuffer.setLength(0);
             }
         }
     }
@@ -426,12 +617,18 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         SignalParser.Result result = SignalParser.parse(line);
         switch (result.action) {
             case OPEN_AI:
-                SerialLog.add(this, line, "AI 도우미 열기");
+                if (isTooSoonForAi()) {
+                    return;
+                }
+                SerialLog.add(this, line, "AI 도우미 열기 (옛 방식 신호)");
                 openAiAssistant();
                 break;
             case RUN_SLOT:
-                SerialLog.add(this, line, result.slot + "번 버튼 실행");
-                handleButtonSignalReceived(result.slot);
+                if (isTooSoonForSlot(result.slot)) {
+                    return;
+                }
+                SerialLog.add(this, line, result.slot + "번 버튼 실행 (옛 방식 신호)");
+                launchSlot(result.slot, false);
                 break;
             default:
                 SerialLog.add(this, line, "알 수 없는 신호 (무시함)");
@@ -439,18 +636,33 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         }
     }
 
-    @Override
-    public void onRunError(Exception e) {
-        disconnectUsbDevice();
-    }
-
-    private void handleButtonSignalReceived(final int slot) {
+    /** 옛 평문 경로 전용 떨림 방지. 프레임 경로는 기기가 이미 걸러 냅니다. */
+    private boolean isTooSoonForSlot(int slot) {
         long now = System.currentTimeMillis();
         if (now - lastLaunchTime[slot] < DEBOUNCE_DELAY_MS) {
-            return; // 너무 빨리 다시 눌린 경우는 무시합니다.
+            return true;
         }
         lastLaunchTime[slot] = now;
+        return false;
+    }
 
+    private boolean isTooSoonForAi() {
+        long now = System.currentTimeMillis();
+        if (now - lastAiLaunchTime < DEBOUNCE_DELAY_MS) {
+            return true;
+        }
+        lastAiLaunchTime = now;
+        return false;
+    }
+
+    // ------------------------------------------------------------------ 실행
+
+    /**
+     * 버튼에 연결된 앱을 엽니다.
+     *
+     * @param framed 프레임으로 온 신호인가. 그렇다면 결과를 기기에 진동으로 돌려줍니다.
+     */
+    private void launchSlot(final int slot, final boolean framed) {
         new Handler(Looper.getMainLooper()).post(new Runnable() {
             @Override
             public void run() {
@@ -460,20 +672,20 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                     Toast.makeText(UsbSerialService.this, message, Toast.LENGTH_LONG).show();
                     SpeechManager.get(UsbSerialService.this)
                             .speakIfEnabled(UsbSerialService.this, message);
+                    if (framed) {
+                        sendFeedback(FrameCodec.P_FAIL);
+                    }
                     return;
                 }
-                AppLauncher.runSlot(UsbSerialService.this, slot, "hardware");
+                boolean launched = AppLauncher.runSlot(UsbSerialService.this, slot, "hardware");
+                if (framed) {
+                    sendFeedback(launched ? FrameCodec.P_OK : FrameCodec.P_FAIL);
+                }
             }
         });
     }
 
     private void openAiAssistant() {
-        long now = System.currentTimeMillis();
-        if (now - lastAiLaunchTime < DEBOUNCE_DELAY_MS) {
-            return;
-        }
-        lastAiLaunchTime = now;
-
         new Handler(Looper.getMainLooper()).post(new Runnable() {
             @Override
             public void run() {
@@ -483,5 +695,121 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                 startActivity(intent);
             }
         });
+    }
+
+    // ------------------------------------------------------------------ 기기로 보내기
+
+    /** 실행 결과를 기기에 알려 손끝으로 대답하게 합니다. (성공/실패 진동이 다릅니다) */
+    private void sendFeedback(int pattern) {
+        sendFrame(0, FrameCodec.T_FEEDBACK, new byte[]{(byte) pattern});
+    }
+
+    /**
+     * 프레임 하나를 기기로 보냅니다. 시리얼 쓰기는 블로킹이라 전용 스레드에서 처리하고,
+     * 실패해도 앱이 죽지 않게 조용히 넘어갑니다(기기가 빠진 순간 등).
+     */
+    private void sendFrame(int seq, int type, byte[] payload) {
+        final byte[] bytes = FrameCodec.encode(seq, type, payload);
+        if (bytes == null) {
+            return;
+        }
+        // 읽기 담당(SerialInputOutputManager)이 살아 있으면 그쪽 쓰기 큐에 맡깁니다.
+        // 같은 포트를 두 스레드가 동시에 건드리지 않게 하는 가장 안전한 길입니다.
+        SerialInputOutputManager io = usbIoManager;
+        if (io != null) {
+            try {
+                io.writeAsync(bytes);
+                return;
+            } catch (Exception e) {
+                Log.w(TAG, "writeAsync failed, falling back: " + e.getMessage());
+            }
+        }
+        final UsbSerialPort port = usbSerialPort;
+        if (port == null || writer == null || writer.isShutdown()) {
+            return;
+        }
+        writer.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    port.write(bytes, WRITE_TIMEOUT_MS);
+                } catch (Exception e) {
+                    Log.w(TAG, "Could not send frame: " + e.getMessage());
+                }
+            }
+        });
+    }
+
+    /**
+     * 시험용 프레임을 실제 수신 경로(해석기)에 그대로 흘려 넣습니다.
+     * 지름길을 두지 않고 진짜 바이트로 넣기 때문에, CRC 검사·SEQ 중복 차단까지
+     * 전부 실제와 똑같이 동작합니다.
+     */
+    private void injectTestFrame(int button, int kind, boolean corrupt) {
+        simulationSeq = (simulationSeq % 255) + 1;
+        byte[] payload = new byte[]{(byte) button, (byte) kind, 0, 0};
+        byte[] bytes = FrameCodec.encode(simulationSeq, FrameCodec.T_EVT_PRESS, payload);
+        if (bytes == null) {
+            return;
+        }
+        if (corrupt) {
+            bytes[4] ^= 0x01;   // payload 첫 바이트의 최하위 비트 하나만 뒤집습니다
+            SerialLog.add(this, "잡음 시험", "비트 하나를 일부러 뒤집은 프레임을 넣었습니다 — 실행되면 안 됩니다");
+        }
+        frameDecoder.push(bytes, bytes.length, serialSink);
+        if (corrupt) {
+            SerialLog.add(this, "잡음 시험 결과",
+                    "CRC 오류 " + frameDecoder.crcErrors + "건 · 실행 안 함 ✅");
+        }
+    }
+
+    // ------------------------------------------------------------------ 자가진단용 요약
+
+    /*
+     * 아래 값들은 테스트(자가진단) 화면이 그대로 읽어 갑니다.
+     * "잘 되는 것 같다"가 아니라 숫자로 보여 줘야 어디가 문제인지 알 수 있습니다.
+     */
+
+    private static volatile String deviceInfo = null;    // HELLO 로 받은 기기 정보
+    private static volatile String deviceStats = null;   // STATS 로 받은 기기 통계
+    private static volatile int lastLatencyUs = -1;      // 기기가 잰 마지막 지연
+    private static volatile int maxLatencyUs = -1;       // 그중 최악값
+
+    /** 기기가 알려 준 자기 소개. 아직 못 받았으면 null. */
+    public static String deviceInfo() {
+        return deviceInfo;
+    }
+
+    /** 기기가 알려 준 송신 통계. 아직 못 받았으면 null. */
+    public static String deviceStats() {
+        return deviceStats;
+    }
+
+    /** 접점에서 USB 송출까지 기기가 직접 잰 지연. 아직 없으면 null. */
+    public static String latencySummary() {
+        if (lastLatencyUs < 0) {
+            return null;
+        }
+        return String.format(Locale.KOREA, "마지막 %.2fms · 최악 %.2fms (기기가 직접 잰 값)",
+                lastLatencyUs / 1000.0, maxLatencyUs / 1000.0);
+    }
+
+    /** 프레임을 몇 개 받았고 몇 바이트를 버렸는지. 프레임 오류율이 여기서 나옵니다. */
+    public static String frameSummary() {
+        FrameCodec.Decoder d = decoderSnapshot;
+        if (d == null) {
+            return null;
+        }
+        return String.format(Locale.KOREA,
+                "받은 프레임 %d개 · CRC 오류 %d · 형식 오류 %d · 버린 바이트 %d (오류율 %.3f%%)",
+                d.accepted, d.crcErrors, d.framingErrors, d.discarded, d.errorRate() * 100.0);
+    }
+
+    /** 서비스가 살아 있는 동안 자가진단 화면이 볼 수 있도록 해석기를 가리켜 둡니다. */
+    private static volatile FrameCodec.Decoder decoderSnapshot = null;
+
+    @Override
+    public void onRunError(Exception e) {
+        disconnectUsbDevice();
     }
 }

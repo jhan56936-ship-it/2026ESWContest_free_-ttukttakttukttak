@@ -144,6 +144,20 @@
                 app:backgroundTint="@color/vk_accent"
                 app:icon="@drawable/ic_sparkle"
                 app:iconGravity="textStart" />
+
+            <!--
+                일부러 깨뜨린 신호를 넣어 보는 단추입니다.
+                아무 앱도 열리지 않고 기록에만 "실행 안 함"이 남아야 정상입니다.
+            -->
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSignalNoise"
+                style="@style/VkButton.Outline"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_s"
+                android:text="@string/test_signal_noise"
+                app:icon="@drawable/ic_alert"
+                app:iconGravity="textStart" />
         </LinearLayout>
 
         <!-- 받은 신호 기록 -->

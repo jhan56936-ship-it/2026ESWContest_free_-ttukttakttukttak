@@ -30,7 +30,7 @@ import java.util.List;
  * "왜 안 되는지"를 사용자가 스스로 알 수 있어야 합니다. 그래서
  *
  *  1. 열 가지 항목을 한 번에 검사하고 ✅ / ⚠️ 로 보여 주고,
- *  2. 기기가 없어도 가짜 버튼 신호를 넣어 실제 동작을 시험해 보고,
+ *  2. 기기가 없어도 진짜와 똑같은 프레임(깨진 것 포함)을 넣어 동작을 시험해 보고,
  *  3. 기기가 보낸 신호 기록을 눈으로 확인할 수 있게
  *
  * 만들었습니다.
@@ -94,10 +94,12 @@ public class DiagnosticsActivity extends BaseActivity {
             }
         });
 
-        findViewById(R.id.btnSignal1).setOnClickListener(signalListener("Button1"));
-        findViewById(R.id.btnSignal2).setOnClickListener(signalListener("Button2"));
-        findViewById(R.id.btnSignal3).setOnClickListener(signalListener("Button3"));
-        findViewById(R.id.btnSignalAi).setOnClickListener(signalListener("AI"));
+        // 기기가 실제로 보내는 것과 똑같은 프레임(CRC·SEQ 포함)을 만들어 넣습니다.
+        findViewById(R.id.btnSignal1).setOnClickListener(frameListener(1, FrameCodec.K_SHORT, false));
+        findViewById(R.id.btnSignal2).setOnClickListener(frameListener(2, FrameCodec.K_SHORT, false));
+        findViewById(R.id.btnSignal3).setOnClickListener(frameListener(3, FrameCodec.K_SHORT, false));
+        findViewById(R.id.btnSignalAi).setOnClickListener(frameListener(1, FrameCodec.K_LONG, false));
+        findViewById(R.id.btnSignalNoise).setOnClickListener(frameListener(1, FrameCodec.K_SHORT, true));
 
         findViewById(R.id.btnClearLog).setOnClickListener(new View.OnClickListener() {
             @Override
@@ -134,14 +136,26 @@ public class DiagnosticsActivity extends BaseActivity {
 
     // ------------------------------------------------------------------ 가상 신호
 
-    private View.OnClickListener signalListener(final String signal) {
+    /**
+     * 기기가 보내는 것과 똑같은 프레임을 만들어 실제 수신 경로에 넣습니다.
+     * 지름길이 아니라 진짜 바이트로 넣기 때문에 CRC 검사와 중복 차단까지 그대로 거칩니다.
+     *
+     * @param corrupt true 면 비트 하나를 일부러 뒤집습니다. 이때는 <b>아무 앱도 열리지 않아야</b>
+     *                맞습니다. "깨진 신호는 실행되지 않는다"를 기기 없이 보여 주는 시험입니다.
+     */
+    private View.OnClickListener frameListener(final int button, final int kind,
+                                               final boolean corrupt) {
         return new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 Haptics.tap(DiagnosticsActivity.this);
-                UsbSerialService.simulate(DiagnosticsActivity.this, signal);
-                Toast.makeText(DiagnosticsActivity.this,
-                        "'" + signal + "' 신호를 넣었어요.", Toast.LENGTH_SHORT).show();
+                UsbSerialService.simulateFrame(DiagnosticsActivity.this, button, kind, corrupt);
+                String what = corrupt
+                        ? "일부러 깨뜨린 신호를 넣었어요. 아무 일도 안 일어나야 정상이에요."
+                        : (kind == FrameCodec.K_LONG
+                                ? "길게 누른 신호를 넣었어요."
+                                : button + "번 버튼 신호를 넣었어요.");
+                Toast.makeText(DiagnosticsActivity.this, what, Toast.LENGTH_SHORT).show();
             }
         };
     }
@@ -176,6 +190,9 @@ public class DiagnosticsActivity extends BaseActivity {
         checks.addAll(checkSlots());
         checks.add(checkShortcuts());
         checks.add(checkOfflineKeywords());
+        checks.add(checkDeviceProtocol());
+        checks.add(checkFrameQuality());
+        checks.add(checkLatency());
 
         render(checks);
 
@@ -297,6 +314,40 @@ public class DiagnosticsActivity extends BaseActivity {
         boolean ok = count > 0;
         return new Check("삼성 루틴 바로가기", ok,
                 ok ? count + "개가 등록돼 있어요." : "아직 없어요. '삼성 루틴 연결'에서 만들어 주세요.");
+    }
+
+    // ------------------------------------------------------------------ 기기(펌웨어) 검사
+    //
+    // 아래 셋은 기기가 직접 재서 보내 준 값이거나, 앱이 실제로 세어 둔 값입니다.
+    // "잘 되는 것 같다"가 아니라 숫자로 보여야 어디가 문제인지 알 수 있습니다.
+
+    private Check checkDeviceProtocol() {
+        String info = UsbSerialService.deviceInfo();
+        if (info == null) {
+            return new Check("기기 펌웨어", false,
+                    "아직 기기가 자기 소개(HELLO)를 보내지 않았어요. "
+                            + "옛 펌웨어이거나 기기가 안 꽂혀 있을 수 있어요.");
+        }
+        String stats = UsbSerialService.deviceStats();
+        return new Check("기기 펌웨어", true, stats == null ? info : info + "\n" + stats);
+    }
+
+    private Check checkFrameQuality() {
+        String summary = UsbSerialService.frameSummary();
+        if (summary == null) {
+            return new Check("신호 품질", false, "아직 받은 신호가 없어요.");
+        }
+        return new Check("신호 품질", true,
+                summary + "\n깨진 신호는 버려지므로 엉뚱한 앱이 열리지 않아요.");
+    }
+
+    private Check checkLatency() {
+        String summary = UsbSerialService.latencySummary();
+        if (summary == null) {
+            return new Check("반응 빠르기", false,
+                    "아직 잰 적이 없어요. 위에서 버튼 신호를 한 번 넣어 보세요.");
+        }
+        return new Check("반응 빠르기", true, summary);
     }
 
     private Check checkOfflineKeywords() {

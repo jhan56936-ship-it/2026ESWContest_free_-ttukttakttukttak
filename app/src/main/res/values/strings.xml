@@ -67,8 +67,9 @@
     <string name="test_not_run">아직 검사하지 않았어요. 위 단추를 눌러 주세요.</string>
     <string name="test_running">검사하고 있어요…</string>
     <string name="test_signal_section">기기 없이 버튼 눌러 보기</string>
-    <string name="test_signal_hint">기기를 안 꽂아도, 아래 단추를 누르면 진짜 버튼을 누른 것과 똑같이 동작합니다.</string>
+    <string name="test_signal_hint">기기를 안 꽂아도, 아래 단추를 누르면 진짜 버튼을 누른 것과 똑같이 동작합니다. (기기가 보내는 것과 같은 신호를 만들어 넣습니다.)</string>
     <string name="test_signal_ai">AI 도우미 (길게 누름)</string>
+    <string name="test_signal_noise">깨진 신호 넣어 보기 (실행되면 안 돼요)</string>
     <string name="test_log_section">받은 신호 기록</string>
     <string name="test_log_empty">아직 들어온 신호가 없어요.</string>
     <string name="test_log_clear">기록 지우기</string>
