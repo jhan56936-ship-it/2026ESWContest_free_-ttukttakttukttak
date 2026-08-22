@@ -39,6 +39,13 @@
  */
 
 #include <Arduino.h>
+
+// FreeRTOS 는 Arduino.h 가 간접적으로 끌어오지만, 큐·태스크 API를 직접 쓰므로
+// 코어 버전에 상관없이 확실히 잡히도록 명시해 둡니다.
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+
 #include "vkp_frame.h"
 #include "press_fsm.h"
 #include "haptics.h"

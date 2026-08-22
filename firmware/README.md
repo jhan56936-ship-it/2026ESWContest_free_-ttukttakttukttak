@@ -254,6 +254,34 @@ Wi-Fi를 쓰지 않으므로 모두 core 1에 올렸습니다(core 0은 USB·시
 
 ## 7. 검증
 
+### 7-0. 빌드 검증 (2026-08-22 확인)
+
+보드 없이도 "플래시에 올릴 수 있는 코드인가"는 확인할 수 있습니다.
+ESP32 Arduino 코어 **3.3.11** 로 두 가지 USB 설정 모두 빌드했고, **우리 코드에서 경고 0개**입니다.
+
+| USB 설정 (FQBN 옵션) | 결과 | 플래시 | RAM(전역) |
+|---|---|---|---|
+| Hardware CDC and JTAG (기본) | ✅ 통과 | 284,104 B (8%) | 22,728 B (6%) |
+| USB-OTG TinyUSB (`USBMode=default`) | ✅ 통과 | 338,456 B (10%) | 54,904 B (16%) |
+
+기본 설정 기준으로 플래시는 8%, RAM은 6%만 씁니다. 앞으로 절전·NVS·터치 게이팅을
+붙일 여유가 충분합니다.
+
+재현 방법 (아두이노 IDE에 번들된 arduino-cli 사용):
+
+```bash
+CLI="/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli"
+export ARDUINO_DIRECTORIES_DATA="$HOME/Library/Arduino15"
+
+"$CLI" core install esp32:esp32@3.3.11 \
+  --additional-urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+"$CLI" compile --fqbn esp32:esp32:XIAO_ESP32S3 --warnings all firmware/vibekey_firmware
+```
+
+> `XIAO_ESP32S3` 보드는 **USB CDC On Boot 기본값이 Enabled** 라서 IDE에서 따로 건드릴 것이 없습니다.
+> (`arduino-cli board details -b esp32:esp32:XIAO_ESP32S3` 로 확인)
+
 ### 7-1. 단위 테스트 (PC에서, 기기 없이)
 
 ```bash
@@ -315,7 +343,8 @@ CRC8이 부실한 게 아니라 여러 비트가 한꺼번에 망가질 때만 �
 | Upload Mode | USB-OTG CDC |
 | 추가 라이브러리 | **없음** (ESP32 Arduino 코어만 있으면 빌드됩니다) |
 
-ESP32 Arduino 코어 **2.x / 3.x 양쪽에서 빌드**됩니다 (LEDC API 차이는 `haptics.h`에서 흡수).
+ESP32 Arduino 코어 **2.x / 3.x 양쪽에서 빌드**되도록 LEDC API 차이를 `haptics.h`에서 흡수했습니다.
+**3.3.11 에서는 실제로 빌드해 확인했습니다** (위 7-0). 2.x 는 코드 분기만 준비돼 있고 미검증입니다.
 
 ### 8-2. 업로드가 안 될 때
 

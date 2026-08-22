@@ -164,6 +164,9 @@ adb shell am start -a android.intent.action.VIEW -d "vibekey://run/2"
 cd firmware/test && ./run_tests.sh        # 펌웨어 41개 (PC에서, 기기 불필요)
 ```
 
+펌웨어는 **ESP32 코어 3.3.11로 실제 빌드까지 확인**했습니다 (경고 0개, 플래시 8% · RAM 6%).
+빌드 명령과 두 USB 설정별 사용량은 [`firmware/README.md` 7-0](firmware/README.md).
+
 검증된 결과: **앱 단위 48개 + 펌웨어 41개 = 89개 전부 통과** (기기 없이 확인).
 계측 테스트 7개는 실제 기기·에뮬레이터에서 돌려야 합니다.
 
