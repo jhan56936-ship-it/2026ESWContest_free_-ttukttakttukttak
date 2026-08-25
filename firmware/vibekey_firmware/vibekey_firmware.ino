@@ -13,18 +13,17 @@
  *  버튼 핀(D0·D1·D2)은 2.0과 같습니다 — 기기를 다시 만들 필요가 없습니다.
  *
  *    1. 입력 판정   ISR → 큐 → 상태머신(디바운스·짧게/길게·떨림 가드)  [press_fsm.h]
- *    2. 전송 신뢰   프레임 + CRC8 + SEQ + ACK + 재전송 3회             [vkp_frame.h]
- *    3. 촉각 응답   눌림/성공/실패를 서로 다른 진동으로 손끝에 대답     [haptics.h]
+ *    2. 전송 신뢰   프레임 + CRC16 + SEQ + ACK + 재전송 3회            [vkp_frame.h]
  *
- *  폰이 잠들어 있거나 앱이 죽어 ACK가 세 번 다 실패하면, 기기가 스스로 길게
- *  진동해 "지금 안 되고 있다"를 알립니다. 어르신은 화면을 보지 않고도 압니다.
+ *  기기에는 출력 장치가 없습니다(버튼 3개 + USB가 전부). 사용자에게 알리는 일은
+ *  폰이 맡고(음성·진동), 기기는 "제대로 전달됐는가"를 스스로 판단해 재전송하고
+ *  실패 횟수를 세어 둡니다. 그 값은 STATS 프레임으로 앱의 자가진단 화면에 나옵니다.
  *
  *  태스크 구성 (모두 core 1, Wi-Fi 없이 동작)
  *  ---------------------------------------------------------------------------
  *   이름        우선순위  주기      스택   하는 일
  *   inputTask      4     10ms     3072B  ISR 큐를 비우고 누름 종류를 확정
  *   protoTask      3      5ms     4096B  프레임 송신·ACK 대기·재전송·수신 해석
- *   hapticTask     2     이벤트   2048B  진동 패턴 재생 (LEDC PWM)
  *
  *  아두이노 IDE 설정
  *  ---------------------------------------------------------------------------
@@ -48,7 +47,6 @@
 
 #include "vkp_frame.h"
 #include "press_fsm.h"
-#include "haptics.h"
 
 using namespace vkp;
 
@@ -82,8 +80,8 @@ static const uint8_t BUTTON_PINS[BUTTON_COUNT] = {
     2,   // D1 — 2번 버튼
     3    // D2 — 3번 버튼  (스트래핑 핀 주의, 위 설명 참고)
 };
-static const uint8_t MOTOR_PIN = 4;   // D3  — 진동 모터 (MOSFET 게이트)
 static const uint8_t PROBE_PIN = 9;   // D10 — 지연 측정용 관측 핀
+// D3~D10 은 비어 있습니다. 나중에 표시 장치(LED 등)를 붙인다면 여기를 씁니다.
 
 // ---------------------------------------------------------------- 큐 / 상태
 
@@ -103,7 +101,6 @@ struct PressMsg {
 
 static QueueHandle_t edgeQueue   = nullptr;
 static QueueHandle_t pressQueue  = nullptr;
-static QueueHandle_t hapticQueue = nullptr;
 
 static PressFsm  fsm[BUTTON_COUNT];
 static Decoder   rx;
@@ -142,37 +139,6 @@ static void IRAM_ATTR onButtonEdge(void* arg) {
     xQueueSendFromISR(edgeQueue, &msg, &woken);
     if (woken == pdTRUE) {
         portYIELD_FROM_ISR();
-    }
-}
-
-// ---------------------------------------------------------------- 진동 태스크
-
-static void enqueueHaptic(uint8_t pattern) {
-    if (pattern != P_NONE && hapticQueue != nullptr) {
-        xQueueSend(hapticQueue, &pattern, 0);
-    }
-}
-
-static void hapticTask(void* /*arg*/) {
-    hapticBegin(MOTOR_PIN);
-    uint8_t pattern;
-    for (;;) {
-        if (xQueueReceive(hapticQueue, &pattern, portMAX_DELAY) == pdTRUE) {
-            const HapticStep* step = hapticPattern(pattern);
-            if (step == nullptr) {
-                continue;
-            }
-            // {duty, ms} 단계를 그대로 밟아 나갑니다. delay()가 아니라 vTaskDelay라
-            // 진동 중에도 버튼·시리얼은 계속 살아 있습니다.
-            for (uint8_t i = 0; i < HAPTIC_MAX_STEPS; i++) {
-                if (step[i].ms == 0) {
-                    break;
-                }
-                hapticDuty(MOTOR_PIN, step[i].duty);
-                vTaskDelay(pdMS_TO_TICKS(step[i].ms));
-            }
-            hapticDuty(MOTOR_PIN, 0);
-        }
     }
 }
 
@@ -234,7 +200,8 @@ static void writeFrame(uint8_t seq, uint8_t type, const uint8_t* payload, uint8_
 }
 
 static void sendHello() {
-    uint8_t p[5] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, 0x01 /*진동 있음*/};
+    // caps: 기기가 가진 기능 비트. 지금은 출력 장치가 없어 0입니다.
+    uint8_t p[5] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, 0x00};
     writeFrame(0, T_HELLO, p, sizeof(p));
 }
 
@@ -267,7 +234,6 @@ static void protoTask(void* /*arg*/) {
             if (linkUp) {
                 rx.reset();
                 sendHello();
-                enqueueHaptic(P_LINK);      // "폰이랑 이어졌어요"
             }
         }
 
@@ -284,9 +250,6 @@ static void protoTask(void* /*arg*/) {
                         waitingAck = false;         // 잘 도착했음 — 재전송 중단
                     }
                     break;
-                case T_FEEDBACK:
-                    enqueueHaptic(f.u8(0));         // 실행 성공/실패를 손끝으로
-                    break;
                 case T_PING:
                     sendHello();
                     sendStats();
@@ -298,8 +261,6 @@ static void protoTask(void* /*arg*/) {
 
         // --- 3. 확정된 누름을 프레임으로 내보내기 ---
         if (!waitingAck && xQueueReceive(pressQueue, &pending, 0) == pdTRUE) {
-            enqueueHaptic(hapticForPress(pending.button, pending.kind));  // 먼저 "눌렸어요"
-
             uint32_t latency = micros() - pending.stampUs;
             if (latency > 65535) {
                 latency = 65535;
@@ -323,7 +284,7 @@ static void protoTask(void* /*arg*/) {
             sentAtMs = millis();
         }
 
-        // --- 4. ACK가 안 오면 다시 보내고, 세 번 다 실패하면 진동으로 알림 ---
+        // --- 4. ACK가 안 오면 다시 보내고, 세 번 다 실패하면 횟수를 기록 ---
         if (waitingAck && (uint32_t)(millis() - sentAtMs) >= ACK_TIMEOUT_MS) {
             if (retry < MAX_RETRY - 1) {
                 retry++;
@@ -334,9 +295,10 @@ static void protoTask(void* /*arg*/) {
                 writeFrame(pendingSeq, T_EVT_PRESS, p, sizeof(p));  // SEQ 그대로 = 폰이 중복 실행 안 함
                 sentAtMs = millis();
             } else {
+                // 세 번을 다 보냈는데도 답이 없습니다. 기기에는 알릴 방법이 없으므로
+                // 횟수만 세어 두고, 앱의 자가진단 화면이 STATS로 읽어 가게 합니다.
                 waitingAck = false;
                 stats.ackTimeout++;
-                enqueueHaptic(P_LOST);      // "지금 폰이 못 받고 있어요"
             }
         }
 
@@ -364,10 +326,8 @@ void setup() {
 
     edgeQueue   = xQueueCreate(32, sizeof(EdgeMsg));
     pressQueue  = xQueueCreate(8,  sizeof(PressMsg));
-    hapticQueue = xQueueCreate(8,  sizeof(uint8_t));
 
-    // 진동 → 입력 → 프로토콜 순으로 띄웁니다. 모두 core 1 (core 0은 USB·시스템용).
-    xTaskCreatePinnedToCore(hapticTask, "haptic", 2048, nullptr, 2, nullptr, 1);
+    // 두 태스크 모두 core 1에 올립니다 (core 0은 USB·시스템이 씁니다).
     xTaskCreatePinnedToCore(inputTask,  "input",  3072, nullptr, 4, nullptr, 1);
     xTaskCreatePinnedToCore(protoTask,  "proto",  4096, nullptr, 3, nullptr, 1);
 

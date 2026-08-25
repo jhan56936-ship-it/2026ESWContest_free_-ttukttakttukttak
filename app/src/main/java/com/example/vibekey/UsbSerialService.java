@@ -48,11 +48,10 @@ import java.util.concurrent.Executors;
  *               HELLO      펌웨어 버전·버튼 수
  *               STATS      보낸 수·재전송 수·ACK 실패 수 (실측값)
  *   폰 → 기기   ACK        "잘 받았다" — 이게 없으면 기기가 세 번까지 다시 보냅니다
- *               FEEDBACK   "앱이 열렸다 / 못 열었다" — 기기가 서로 다른 진동으로 알려 줍니다
  *               PING       상태를 물어봄 (자가진단 화면에서 사용)
  * </pre>
  *
- * 덕분에 어르신은 화면을 보지 않고도 <b>눌렸는지 · 됐는지 · 안 됐는지</b>를 손끝으로 압니다.
+ * 기기에는 표시 장치가 없어서, 사용자에게 알리는 일은 폰이 맡습니다(음성·진동).
  * 옛 펌웨어("True\n")를 올린 기기도 그대로 동작합니다 —
  * 프레임이 아닌 바이트는 {@link FrameCodec.Decoder}가 따로 넘겨 주고, 예전 방식으로 해석합니다.
  */
@@ -538,7 +537,6 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
      *     있는데 그동안 기다리게 하면 기기가 "못 받았다"고 오해해 같은 신호를 또 보냅니다.
      *  2. <b>같은 SEQ면 실행하지 않음</b> — ACK가 도중에 유실돼 기기가 다시 보낸 경우입니다.
      *     같은 누름이므로 앱을 두 번 열면 안 됩니다. (2.0의 3초 디바운스를 대신하는 장치)
-     *  3. <b>실행한 뒤 결과를 진동으로</b> — 성공/실패를 서로 다른 패턴으로 기기에 돌려줍니다.
      */
     private void handlePressFrame(FrameCodec.Frame frame) {
         sendFrame(0, FrameCodec.T_ACK, new byte[]{(byte) frame.seq});
@@ -562,11 +560,10 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
             case OPEN_AI:
                 SerialLog.add(this, frame.toString(), detail);
                 openAiAssistant();
-                sendFeedback(FrameCodec.P_OK);
                 break;
             case RUN_SLOT:
                 SerialLog.add(this, frame.toString(), detail);
-                launchSlot(result.slot, true);
+                launchSlot(result.slot);
                 break;
             default:
                 SerialLog.add(this, frame.toString(), "알 수 없는 신호 (무시함)");
@@ -628,7 +625,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                     return;
                 }
                 SerialLog.add(this, line, result.slot + "번 버튼 실행 (옛 방식 신호)");
-                launchSlot(result.slot, false);
+                launchSlot(result.slot);
                 break;
             default:
                 SerialLog.add(this, line, "알 수 없는 신호 (무시함)");
@@ -657,12 +654,8 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
 
     // ------------------------------------------------------------------ 실행
 
-    /**
-     * 버튼에 연결된 앱을 엽니다.
-     *
-     * @param framed 프레임으로 온 신호인가. 그렇다면 결과를 기기에 진동으로 돌려줍니다.
-     */
-    private void launchSlot(final int slot, final boolean framed) {
+    /** 버튼에 연결된 앱을 엽니다. 실행 결과는 폰이 음성·진동·화면으로 알립니다. */
+    private void launchSlot(final int slot) {
         new Handler(Looper.getMainLooper()).post(new Runnable() {
             @Override
             public void run() {
@@ -672,15 +665,9 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                     Toast.makeText(UsbSerialService.this, message, Toast.LENGTH_LONG).show();
                     SpeechManager.get(UsbSerialService.this)
                             .speakIfEnabled(UsbSerialService.this, message);
-                    if (framed) {
-                        sendFeedback(FrameCodec.P_FAIL);
-                    }
                     return;
                 }
-                boolean launched = AppLauncher.runSlot(UsbSerialService.this, slot, "hardware");
-                if (framed) {
-                    sendFeedback(launched ? FrameCodec.P_OK : FrameCodec.P_FAIL);
-                }
+                AppLauncher.runSlot(UsbSerialService.this, slot, "hardware");
             }
         });
     }
@@ -698,11 +685,6 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     }
 
     // ------------------------------------------------------------------ 기기로 보내기
-
-    /** 실행 결과를 기기에 알려 손끝으로 대답하게 합니다. (성공/실패 진동이 다릅니다) */
-    private void sendFeedback(int pattern) {
-        sendFrame(0, FrameCodec.T_FEEDBACK, new byte[]{(byte) pattern});
-    }
 
     /**
      * 프레임 하나를 기기로 보냅니다. 시리얼 쓰기는 블로킹이라 전용 스레드에서 처리하고,

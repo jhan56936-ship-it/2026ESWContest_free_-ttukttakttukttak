@@ -42,24 +42,14 @@ public final class FrameCodec {
 
     // 폰 → 기기
     public static final int T_ACK       = 0x10;
-    public static final int T_FEEDBACK  = 0x11;
     public static final int T_PING      = 0x12;
+    // 0x11 은 예전에 진동 패턴 지시(FEEDBACK)로 쓰던 번호입니다. 기기에 출력 장치가
+    // 없어 지금은 쓰지 않지만, 나중에 표시 장치를 붙일 때를 위해 비워 둡니다.
 
     // 누름 종류
     public static final int K_SHORT  = 0;
     public static final int K_LONG   = 1;
     public static final int K_DOUBLE = 2;
-
-    // 진동 패턴 (기기가 재생합니다)
-    public static final int P_NONE = 0;
-    public static final int P_BTN1 = 1;
-    public static final int P_BTN2 = 2;
-    public static final int P_BTN3 = 3;
-    public static final int P_AI   = 4;
-    public static final int P_OK   = 5;
-    public static final int P_FAIL = 6;
-    public static final int P_LINK = 7;
-    public static final int P_LOST = 8;
 
     private FrameCodec() {
     }

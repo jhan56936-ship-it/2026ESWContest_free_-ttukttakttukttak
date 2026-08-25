@@ -62,24 +62,14 @@ static const uint8_t T_STATS     = 0x03;  // sent, retx, ackTimeout, crcErr, upt
 
 // 폰 → 기기
 static const uint8_t T_ACK       = 0x10;  // ackSeq
-static const uint8_t T_FEEDBACK  = 0x11;  // 진동 패턴 번호
 static const uint8_t T_PING      = 0x12;  // (빈 payload) → 기기가 HELLO+STATS로 답함
+// 0x11 은 예전에 진동 패턴 지시(FEEDBACK)로 쓰던 번호입니다. 기기에 출력 장치가
+// 없어 지금은 쓰지 않지만, 나중에 표시 장치를 붙일 때를 위해 비워 둡니다.
 
 // 누름 종류
 static const uint8_t K_SHORT  = 0;
 static const uint8_t K_LONG   = 1;
 static const uint8_t K_DOUBLE = 2;
-
-// 진동 패턴 번호 (기기가 스스로 내는 것 + 폰이 T_FEEDBACK 으로 시키는 것)
-static const uint8_t P_NONE   = 0;
-static const uint8_t P_BTN1   = 1;  // 짧게 1번
-static const uint8_t P_BTN2   = 2;  // 짧게 2번
-static const uint8_t P_BTN3   = 3;  // 길게 1번
-static const uint8_t P_AI     = 4;  // 짧게-길게 (길게 누름 = AI 도우미)
-static const uint8_t P_OK     = 5;  // 실행 성공
-static const uint8_t P_FAIL   = 6;  // 실행 실패 (앱이 없거나 못 열었음)
-static const uint8_t P_LINK   = 7;  // 폰과 연결됨
-static const uint8_t P_LOST   = 8;  // 세 번 보냈는데 폰이 받지 못함
 
 // ---------------------------------------------------------------- CRC16
 
