@@ -14,6 +14,7 @@
  *
  *    1. 입력 판정   ISR → 큐 → 상태머신(디바운스·짧게/길게·떨림 가드)  [press_fsm.h]
  *    2. 전송 신뢰   프레임 + CRC16 + SEQ + ACK + 재전송 3회            [vkp_frame.h]
+ *    3. 자기 감시   태스크 워치독 · 재시작 원인 기록 · 힙/큐 감시
  *
  *  기기에는 출력 장치가 없습니다(버튼 3개 + USB가 전부). 사용자에게 알리는 일은
  *  폰이 맡고(음성·진동), 기기는 "제대로 전달됐는가"를 스스로 판단해 재전송하고
@@ -45,6 +46,11 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 
+// 태스크 워치독 · 재시작 원인 · 힙 상태 — 기기가 스스로를 감시하기 위한 것들
+#include <esp_task_wdt.h>
+#include <esp_system.h>
+#include <esp_heap_caps.h>
+
 #include "vkp_frame.h"
 #include "press_fsm.h"
 
@@ -61,6 +67,15 @@ static const uint8_t FW_MINOR = 0;
 /** ACK를 못 받았을 때 다시 보내는 간격과 횟수 */
 static const uint16_t ACK_TIMEOUT_MS = 150;
 static const uint8_t  MAX_RETRY      = 3;
+
+/**
+ * 태스크 워치독 제한 시간.
+ * 두 태스크는 각각 10ms·5ms마다 도는데, 5초 동안 한 번도 신고하지 않았다면
+ * 어딘가에 갇힌 것입니다. 이때는 매달려 있는 것보다 재시작이 낫습니다.
+ * 어르신은 "왜 안 되지" 하고 케이블을 뽑았다 꽂는 것 말고는 할 수 있는 게 없으니,
+ * 기기가 스스로 복구해야 합니다.
+ */
+static const uint32_t WDT_TIMEOUT_MS = 5000;
 
 // ---------------------------------------------------------------- 핀맵
 //  XIAO ESP32-S3 (D 표기 → 실제 GPIO)
@@ -114,6 +129,17 @@ static struct {
     uint16_t maxLatencyUs;  // 최악값
 } stats = {0, 0, 0, 0, 0};
 
+/**
+ * ISR이 큐에 넣지 못하고 버린 접점 변화 수.
+ * 0이 아니면 "버튼을 눌렀는데 반응이 없었다"는 뜻이고, 원인이 큐 크기나
+ * 태스크 지연이라는 것까지 알 수 있습니다. 눌린 것을 놓치는 일은
+ * 이 기기에서 가장 나쁜 고장이라, 짐작하지 않고 세어 둡니다.
+ */
+static volatile uint32_t edgeDrops = 0;
+
+/** 전원이 들어온 마지막 이유 (정상 부팅인지, 워치독·전압강하 때문인지) */
+static uint8_t bootReason = 0;
+
 // ---------------------------------------------------------------- ISR
 
 /**
@@ -136,7 +162,14 @@ static void IRAM_ATTR onButtonEdge(void* arg) {
 #endif
 
     BaseType_t woken = pdFALSE;
-    xQueueSendFromISR(edgeQueue, &msg, &woken);
+    if (xQueueSendFromISR(edgeQueue, &msg, &woken) != pdTRUE) {
+        // 큐가 가득 참 = 접점 변화를 놓쳤다는 뜻.
+        // volatile 에 ++ 를 쓰면 읽기·쓰기 순서가 규정되지 않아 C++20에서 폐기됐습니다.
+        // 이 값은 쓰는 쪽이 ISR 하나뿐이고 읽는 쪽은 태스크뿐이라, 읽고 더해 쓰는
+        // 세 단계를 눈에 보이게 적어 두는 편이 의도도 분명합니다.
+        uint32_t dropped = edgeDrops;
+        edgeDrops = dropped + 1;
+    }
     if (woken == pdTRUE) {
         portYIELD_FROM_ISR();
     }
@@ -145,8 +178,10 @@ static void IRAM_ATTR onButtonEdge(void* arg) {
 // ---------------------------------------------------------------- 입력 태스크
 
 static void inputTask(void* /*arg*/) {
+    esp_task_wdt_add(nullptr);          // 이 태스크를 워치독 감시 대상에 넣습니다
     EdgeMsg edge;
     for (;;) {
+        esp_task_wdt_reset();           // "아직 살아 있습니다"
         // 1) ISR이 쌓아 둔 접점 변화를 모두 처리
         while (xQueueReceive(edgeQueue, &edge, 0) == pdTRUE) {
             uint8_t kind;
@@ -201,19 +236,29 @@ static void writeFrame(uint8_t seq, uint8_t type, const uint8_t* payload, uint8_
 
 static void sendHello() {
     // caps: 기기가 가진 기능 비트. 지금은 출력 장치가 없어 0입니다.
-    uint8_t p[5] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, 0x00};
+    // 마지막 바이트는 "이 기기가 마지막으로 왜 재시작했는지" 입니다. 정상 부팅인지,
+    // 워치독이 물었는지, 전압이 떨어졌는지를 앱의 자가진단 화면에서 볼 수 있습니다.
+    uint8_t p[6] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, 0x00, bootReason};
     writeFrame(0, T_HELLO, p, sizeof(p));
 }
 
 static void sendStats() {
-    uint16_t crcErr = (uint16_t)rx.crcErrors;
-    uint16_t up     = (uint16_t)(millis() / 1000);
-    uint8_t p[10] = {
+    uint16_t crcErr  = (uint16_t)rx.crcErrors;
+    uint16_t up      = (uint16_t)(millis() / 1000);
+    uint16_t freeKb  = (uint16_t)(esp_get_free_heap_size() / 1024);
+    uint16_t minKb   = (uint16_t)(esp_get_minimum_free_heap_size() / 1024);
+    uint16_t drops   = (uint16_t)edgeDrops;
+
+    // payload 16바이트 = 규격 최대치. 더 넣으려면 종류를 나눠야 합니다.
+    uint8_t p[16] = {
         (uint8_t)(stats.sent & 0xFF),        (uint8_t)(stats.sent >> 8),
         (uint8_t)(stats.retx & 0xFF),        (uint8_t)(stats.retx >> 8),
         (uint8_t)(stats.ackTimeout & 0xFF),  (uint8_t)(stats.ackTimeout >> 8),
         (uint8_t)(crcErr & 0xFF),            (uint8_t)(crcErr >> 8),
-        (uint8_t)(up & 0xFF),                (uint8_t)(up >> 8)
+        (uint8_t)(up & 0xFF),                (uint8_t)(up >> 8),
+        (uint8_t)(freeKb & 0xFF),            (uint8_t)(freeKb >> 8),
+        (uint8_t)(minKb & 0xFF),             (uint8_t)(minKb >> 8),
+        (uint8_t)(drops & 0xFF),             (uint8_t)(drops >> 8)
     };
     writeFrame(0, T_STATS, p, sizeof(p));
 }
@@ -226,7 +271,9 @@ static void protoTask(void* /*arg*/) {
     uint32_t  sentAtMs   = 0;
     bool      linkUp     = false;
 
+    esp_task_wdt_add(nullptr);
     for (;;) {
+        esp_task_wdt_reset();
         // --- 1. 폰이 연결됐는지 (USB CDC의 DTR) ---
         bool nowUp = (bool)Serial;
         if (nowUp != linkUp) {
@@ -309,6 +356,9 @@ static void protoTask(void* /*arg*/) {
 // ---------------------------------------------------------------- setup / loop
 
 void setup() {
+    // 전원이 들어온 이유를 가장 먼저 기록합니다. 앱이 HELLO로 받아 갑니다.
+    bootReason = (uint8_t)esp_reset_reason();
+
     Serial.begin(115200);
 #if ARDUINO_USB_CDC_ON_BOOT
     // 폰이 안 꽂혀 있을 때 Serial.write가 무한정 붙들리지 않게 합니다.
@@ -323,6 +373,16 @@ void setup() {
     pinMode(PROBE_PIN, OUTPUT);
     digitalWrite(PROBE_PIN, LOW);
 #endif
+
+    // 태스크 워치독. 아두이노 코어가 이미 켜 둔 경우가 있어 init이 거부되면
+    // reconfigure로 시간만 우리 값으로 바꿉니다.
+    esp_task_wdt_config_t wdtCfg = {};
+    wdtCfg.timeout_ms     = WDT_TIMEOUT_MS;
+    wdtCfg.idle_core_mask = 0;          // idle 태스크는 감시하지 않습니다
+    wdtCfg.trigger_panic  = true;       // 물리면 패닉 → 자동 재시작
+    if (esp_task_wdt_init(&wdtCfg) == ESP_ERR_INVALID_STATE) {
+        esp_task_wdt_reconfigure(&wdtCfg);
+    }
 
     edgeQueue   = xQueueCreate(32, sizeof(EdgeMsg));
     pressQueue  = xQueueCreate(8,  sizeof(PressMsg));

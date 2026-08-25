@@ -190,7 +190,10 @@ public class DiagnosticsActivity extends BaseActivity {
         checks.addAll(checkSlots());
         checks.add(checkShortcuts());
         checks.add(checkOfflineKeywords());
+        // 기기에 "상태를 알려 달라"고 먼저 물어봅니다. 답은 아래 항목들에서 확인합니다.
+        UsbSerialService.requestDeviceStatus();
         checks.add(checkDeviceProtocol());
+        checks.add(checkRoundTrip());
         checks.add(checkFrameQuality());
         checks.add(checkLatency());
 
@@ -330,6 +333,19 @@ public class DiagnosticsActivity extends BaseActivity {
         }
         String stats = UsbSerialService.deviceStats();
         return new Check("기기 펌웨어", true, stats == null ? info : info + "\n" + stats);
+    }
+
+    /**
+     * 프레임을 보내고 받는 왕복이 실제로 도는지 봅니다.
+     * 이 한 번의 왕복이 CRC·프레이밍·양방향 링크를 한꺼번에 시험합니다.
+     */
+    private Check checkRoundTrip() {
+        String summary = UsbSerialService.roundTripSummary();
+        if (summary == null) {
+            return new Check("기기 왕복 응답", false,
+                    "기기에 물어봤는데 아직 답이 없어요. 기기가 안 꽂혀 있거나 옛 펌웨어일 수 있어요.");
+        }
+        return new Check("기기 왕복 응답", true, summary + " 주고받기가 정상입니다.");
     }
 
     private Check checkFrameQuality() {

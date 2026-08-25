@@ -51,7 +51,10 @@ import java.util.concurrent.Executors;
  *               PING       상태를 물어봄 (자가진단 화면에서 사용)
  * </pre>
  *
- * 기기에는 표시 장치가 없어서, 사용자에게 알리는 일은 폰이 맡습니다(음성·진동).
+ * 기기에는 표시 장치가 없습니다(버튼 3개 + USB가 전부). 그래서 사용자에게 알리는 일은
+ * 폰이 맡되, <b>무엇을 알릴지는 기기가 보낸 프레임이 정합니다</b> — 몇 번 버튼인지,
+ * 짧게인지 길게인지에 따라 폰이 서로 다른 진동 패턴을 울립니다({@link Haptics}).
+ * 부품을 하나도 안 늘리고 "화면을 보지 않아도 안다"를 만드는 방법입니다.
  * 옛 펌웨어("True\n")를 올린 기기도 그대로 동작합니다 —
  * 프레임이 아닌 바이트는 {@link FrameCodec.Decoder}가 따로 넘겨 주고, 예전 방식으로 해석합니다.
  */
@@ -81,6 +84,10 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
 
     /** 시리얼 쓰기는 블로킹이라 서비스 스레드를 붙들지 않도록 따로 돌립니다. */
     private ExecutorService writer;
+
+    /** PING 을 보낸 시각과 HELLO 가 돌아온 시각 — 둘의 차이가 왕복 시간입니다. */
+    private static volatile long pingAtMs = 0;
+    private static volatile long helloAtMs = 0;
 
     /** 마지막으로 실행한 프레임의 SEQ. 기기가 재전송해 와도 두 번 실행하지 않기 위한 표시입니다. */
     private int lastPressSeq = -1;
@@ -144,6 +151,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         usbManager = (UsbManager) getSystemService(Context.USB_SERVICE);
         writer = Executors.newSingleThreadExecutor();
         decoderSnapshot = frameDecoder;
+        instance = this;
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_USB_PERMISSION);
@@ -259,6 +267,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     @Override
     public void onDestroy() {
         super.onDestroy();
+        instance = null;
         disconnectUsbDevice();
         if (writer != null) {
             writer.shutdownNow();
@@ -430,7 +439,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
             broadcastStatus(true, "이제 버튼을 누르시면 앱이 열려요.");
 
             // 3.0 펌웨어라면 HELLO+STATS로 답합니다. 옛 펌웨어는 무시하고 지나갑니다.
-            sendFrame(0, FrameCodec.T_PING, null);
+            requestDeviceStatus();
 
         } catch (IOException e) {
             broadcastStatus(false, "연결에 실패했어요. 케이블을 다시 꽂아 주세요.");
@@ -516,12 +525,23 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
             case FrameCodec.T_HELLO:
                 deviceInfo = String.format(Locale.KOREA, "펌웨어 %d.%d · 버튼 %d개 · 프로토콜 v%d",
                         frame.u8(1), frame.u8(2), frame.u8(3), frame.u8(0));
+                if (frame.len() >= 6) {
+                    deviceInfo += " · 마지막 시작: " + bootReasonText(frame.u8(5));
+                }
+                helloAtMs = System.currentTimeMillis();
                 SerialLog.add(this, "HELLO", deviceInfo);
                 break;
             case FrameCodec.T_STATS:
                 deviceStats = String.format(Locale.KOREA,
-                        "기기가 보낸 %d개 · 재전송 %d회 · 응답 못 받음 %d회 · 기기 쪽 CRC 오류 %d · 켜진 지 %d초",
-                        frame.u16(0), frame.u16(2), frame.u16(4), frame.u16(6), frame.u16(8));
+                        "보낸 신호 %d개 · 재전송 %d회 · 응답 못 받음 %d회 · 켜진 지 %d초",
+                        frame.u16(0), frame.u16(2), frame.u16(4), frame.u16(8));
+                if (frame.len() >= 16) {
+                    // 놓친 접점이 0이 아니면 "눌렀는데 반응이 없었다"는 뜻이라 따로 강조합니다.
+                    int drops = frame.u16(14);
+                    deviceStats += String.format(Locale.KOREA,
+                            "\n메모리 여유 %dKB (최저 %dKB) · 놓친 버튼 입력 %d회%s",
+                            frame.u16(10), frame.u16(12), drops, drops == 0 ? " ✅" : " ⚠️");
+                }
                 SerialLog.add(this, "STATS", deviceStats);
                 break;
             default:
@@ -559,15 +579,35 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         switch (result.action) {
             case OPEN_AI:
                 SerialLog.add(this, frame.toString(), detail);
+                Haptics.buttonPressed(this, 0, true);   // "길게 누른 것을 받았어요"
                 openAiAssistant();
                 break;
             case RUN_SLOT:
                 SerialLog.add(this, frame.toString(), detail);
+                Haptics.buttonPressed(this, result.slot, false);  // 버튼마다 다른 진동
                 launchSlot(result.slot);
                 break;
             default:
                 SerialLog.add(this, frame.toString(), "알 수 없는 신호 (무시함)");
                 break;
+        }
+    }
+
+    /**
+     * ESP-IDF 의 재시작 원인 코드를 사람이 읽을 수 있는 말로 바꿉니다.
+     * (esp_reset_reason_t — 기기가 왜 다시 켜졌는지가 곧 고장 진단의 출발점입니다)
+     */
+    private static String bootReasonText(int code) {
+        switch (code) {
+            case 1:  return "전원 켜짐 (정상)";
+            case 3:  return "소프트웨어 재시작";
+            case 4:  return "오류로 멈춰 재시작";
+            case 5:  return "인터럽트 워치독";
+            case 6:  return "태스크 워치독 (멈춰 있어 자동 복구)";
+            case 7:  return "워치독";
+            case 9:  return "전압이 떨어져 재시작";
+            case 11: return "USB 재연결";
+            default: return "알 수 없음(" + code + ")";
         }
     }
 
@@ -665,9 +705,13 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                     Toast.makeText(UsbSerialService.this, message, Toast.LENGTH_LONG).show();
                     SpeechManager.get(UsbSerialService.this)
                             .speakIfEnabled(UsbSerialService.this, message);
+                    Haptics.failure(UsbSerialService.this);
                     return;
                 }
-                AppLauncher.runSlot(UsbSerialService.this, slot, "hardware");
+                // runSlot 은 성공했을 때 스스로 success() 진동을 냅니다.
+                if (!AppLauncher.runSlot(UsbSerialService.this, slot, "hardware")) {
+                    Haptics.failure(UsbSerialService.this);
+                }
             }
         });
     }
@@ -745,6 +789,33 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         }
     }
 
+    /**
+     * 기기에 "지금 상태를 알려 달라"고 묻습니다(PING → HELLO + STATS).
+     *
+     * 자가진단 화면이 이걸 부르면, 프레임을 <b>보내고 받는 왕복 전체</b>가 실제로 도는지
+     * 확인됩니다. 즉 이 한 번의 왕복이 CRC·프레이밍·양방향 링크를 한꺼번에 시험합니다.
+     */
+    public static void requestDeviceStatus() {
+        UsbSerialService self = instance;
+        if (self == null) {
+            return;
+        }
+        pingAtMs = System.currentTimeMillis();
+        helloAtMs = 0;
+        self.sendFrame(0, FrameCodec.T_PING, null);
+    }
+
+    /** 기기에 물어본 뒤 답이 돌아오기까지 걸린 시간. 아직 답이 없으면 null. */
+    public static String roundTripSummary() {
+        if (pingAtMs == 0) {
+            return null;
+        }
+        if (helloAtMs == 0 || helloAtMs < pingAtMs) {
+            return null;
+        }
+        return (helloAtMs - pingAtMs) + "ms 만에 답이 왔어요.";
+    }
+
     // ------------------------------------------------------------------ 자가진단용 요약
 
     /*
@@ -789,6 +860,9 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
 
     /** 서비스가 살아 있는 동안 자가진단 화면이 볼 수 있도록 해석기를 가리켜 둡니다. */
     private static volatile FrameCodec.Decoder decoderSnapshot = null;
+
+    /** 자가진단 화면이 기기에 직접 물어볼 수 있도록 지금 살아 있는 서비스를 가리킵니다. */
+    private static volatile UsbSerialService instance = null;
 
     @Override
     public void onRunError(Exception e) {
