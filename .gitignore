@@ -44,3 +44,6 @@ app/.idea/
 .DS_Store
 Thumbs.db
 *.log
+
+# 프로젝트와 무관한 파일
+app/*.html
