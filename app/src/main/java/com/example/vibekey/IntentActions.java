@@ -29,7 +29,7 @@ public final class IntentActions {
 
     /** 문자 앱을 번호·내용이 채워진 채로 엽니다. (보내기는 직접 누르셔야 합니다.) */
     public static boolean sms(Context context, String phoneNumber, String body) {
-        Uri uri = TextUtils.isEmpty(phoneNumber) ? Uri.parse("sms:") : Uri.parse("smsto:" + Uri.encode(phoneNumber));
+        Uri uri = TextUtils.isEmpty(phoneNumber) ? Uri.parse("smsto:") : Uri.parse("smsto:" + Uri.encode(phoneNumber));
         Intent intent = new Intent(Intent.ACTION_SENDTO, uri);
         if (!TextUtils.isEmpty(body)) {
             intent.putExtra("sms_body", body);
