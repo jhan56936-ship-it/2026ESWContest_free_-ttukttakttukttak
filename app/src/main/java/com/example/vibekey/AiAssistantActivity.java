@@ -275,6 +275,9 @@ public class AiAssistantActivity extends BaseActivity {
             default:
                 return;
         }
+        if ("maps".equals(reply.action) && TextUtils.isEmpty(reply.actionText)) {
+            return;
+        }
         if (("dial".equals(reply.action) || "sms".equals(reply.action))
                 && TextUtils.isEmpty(reply.actionNumber)) {
             return;
