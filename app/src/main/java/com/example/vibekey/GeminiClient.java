@@ -73,11 +73,19 @@ public class GeminiClient {
         void onError(String friendlyMessage);
     }
 
-    /** 도우미의 답변. openPackage 가 있으면 그 앱을 열어 달라는 뜻입니다. */
+    /**
+     * 도우미의 답변.
+     * openPackage 가 있으면 그 앱을 열어 달라는 뜻이고,
+     * action 이 있으면(dial/sms/maps) 앱을 여는 대신 그 동작을 바로 실행해 달라는 뜻입니다.
+     */
     public static class AssistantReply {
         public String answer = "";
         public String openPackage = "";
         public String openLabel = "";
+        /** "" · "dial" · "sms" · "maps" */
+        public String action = "";
+        public String actionNumber = "";
+        public String actionText = "";
     }
 
     /** 버튼 자동 추천 결과 */
@@ -105,10 +113,21 @@ public class GeminiClient {
                 + appCatalog + "\n"
                 + "사용자가 어떤 앱을 열어 달라고 하거나, 앱을 열어 드리는 것이 도움이 될 때에는\n"
                 + "openPackage 에 위 목록에 실제로 있는 패키지명을 정확히 그대로 적으세요.\n"
-                + "앱을 열 필요가 없으면 openPackage 는 빈 문자열로 두세요.\n"
+                + "앱을 열 필요가 없으면 openPackage 는 빈 문자열로 두세요.\n\n"
+                + "다음 세 가지는 앱을 여는 대신 바로 실행할 수 있는 동작입니다. 해당되면 action 에 적으세요.\n"
+                + "1. action=\"dial\" — 사용자가 말한 문장에 전화번호 숫자가 그대로 들어 있고, 그 번호로 전화를 걸어 달라는 뜻일 때.\n"
+                + "   actionNumber 에 그 번호를 적으세요.\n"
+                + "2. action=\"sms\" — 문장에 전화번호 숫자가 들어 있고, 문자를 보내 달라는 뜻일 때.\n"
+                + "   actionNumber 에 번호를, actionText 에 보낼 내용을 적으세요.\n"
+                + "3. action=\"maps\" — 어떤 장소로 가는 길을 찾아 달라는 뜻일 때. actionText 에 그 장소 이름을 적으세요.\n"
+                + "중요: 사람 이름(예: '아들', '엄마')만 말하고 실제 전화번호 숫자를 말하지 않았으면,\n"
+                + "그 사람의 번호를 알 수 없으니 절대로 번호를 지어내지 말고 action 은 빈 문자열로 둔 채\n"
+                + "answer 에서 번호를 알려 주시면 도와드리겠다고 답하세요.\n"
+                + "위 세 동작에 해당하지 않으면 action, actionNumber, actionText 는 모두 빈 문자열로 두세요.\n\n"
                 + "지금 시각은 " + currentTimeDescription() + " 입니다.\n\n"
                 + "반드시 아래 형식의 JSON 하나만 출력하세요.\n"
-                + "{\"answer\":\"어르신께 드릴 말씀\",\"openPackage\":\"\",\"openLabel\":\"\"}";
+                + "{\"answer\":\"어르신께 드릴 말씀\",\"openPackage\":\"\",\"openLabel\":\"\","
+                + "\"action\":\"\",\"actionNumber\":\"\",\"actionText\":\"\"}";
 
         generateJson(system, question, new Callback<JSONObject>() {
             @Override
@@ -117,6 +136,9 @@ public class GeminiClient {
                 reply.answer = json.optString("answer", "").trim();
                 reply.openPackage = json.optString("openPackage", "").trim();
                 reply.openLabel = json.optString("openLabel", "").trim();
+                reply.action = json.optString("action", "").trim().toLowerCase();
+                reply.actionNumber = json.optString("actionNumber", "").trim();
+                reply.actionText = json.optString("actionText", "").trim();
                 if (TextUtils.isEmpty(reply.answer)) {
                     reply.answer = "죄송해요. 잘 알아듣지 못했어요. 다시 한 번 말씀해 주세요.";
                 }

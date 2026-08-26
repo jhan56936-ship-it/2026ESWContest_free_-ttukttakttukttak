@@ -25,9 +25,14 @@ public final class AppLauncher {
      */
     public static boolean runSlot(Context context, int slot, String source) {
         Prefs prefs = Prefs.with(context);
-        String packageName = prefs.getSlotPackage(slot);
+        String type = prefs.getSlotActionType(slot);
         String label = prefs.getSlotLabel(slot);
 
+        if (!"APP".equals(type)) {
+            return runQuickAction(context, slot, type, label, source);
+        }
+
+        String packageName = prefs.getSlotPackage(slot);
         if (TextUtils.isEmpty(packageName)) {
             String message = slot + "번 버튼에 연결된 앱이 아직 없어요.";
             Toast.makeText(context, message, Toast.LENGTH_LONG).show();
@@ -43,6 +48,46 @@ public final class AppLauncher {
             RoutineBridge.notifyButtonPressed(context, slot, packageName, label, source);
         } else {
             String message = (TextUtils.isEmpty(label) ? "그 앱" : label) + "이(가) 휴대폰에 없어요. 다시 정해 주세요.";
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show();
+            SpeechManager.get(context).speakIfEnabled(context, message);
+        }
+        return launched;
+    }
+
+    /** 앱을 여는 대신 전화 걸기·문자 보내기·길찾기처럼 정해 둔 동작을 바로 실행합니다. */
+    private static boolean runQuickAction(Context context, int slot, String type, String label, String source) {
+        Prefs prefs = Prefs.with(context);
+        String number = prefs.getSlotActionNumber(slot);
+        String text = prefs.getSlotActionText(slot);
+        String labelOrDefault = TextUtils.isEmpty(label) ? "이 동작" : label;
+
+        boolean launched;
+        String successSpoken;
+        switch (type) {
+            case "DIAL":
+                launched = IntentActions.dial(context, number);
+                successSpoken = labelOrDefault + "으로 전화 걸 준비를 했어요. 통화 버튼을 눌러 주세요.";
+                break;
+            case "SMS":
+                launched = IntentActions.sms(context, number, text);
+                successSpoken = labelOrDefault + " 문자를 준비했어요. 보내기 버튼을 눌러 주세요.";
+                break;
+            case "MAPS":
+                launched = IntentActions.navigate(context, text);
+                successSpoken = labelOrDefault + "로 가는 길을 찾아 드릴게요.";
+                break;
+            default:
+                launched = false;
+                successSpoken = "";
+                break;
+        }
+
+        if (launched) {
+            Haptics.success(context);
+            SpeechManager.get(context).speakIfEnabled(context, successSpoken);
+            RoutineBridge.notifyButtonPressed(context, slot, "", label, source);
+        } else {
+            String message = labelOrDefault + " 동작을 실행하지 못했어요. 다시 정해 주세요.";
             Toast.makeText(context, message, Toast.LENGTH_LONG).show();
             SpeechManager.get(context).speakIfEnabled(context, message);
         }

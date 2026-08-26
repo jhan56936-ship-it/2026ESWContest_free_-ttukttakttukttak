@@ -291,10 +291,16 @@ public class DiagnosticsActivity extends BaseActivity {
     private List<Check> checkSlots() {
         List<Check> checks = new ArrayList<>();
         for (int slot = 1; slot <= Prefs.SLOT_COUNT; slot++) {
-            String packageName = prefs.getSlotPackage(slot);
             String label = prefs.getSlotLabel(slot);
             String name = slot + "번 버튼";
 
+            if (!"APP".equals(prefs.getSlotActionType(slot))) {
+                boolean ok = !TextUtils.isEmpty(label);
+                checks.add(new Check(name, ok, ok ? label + " (빠른 동작)" : "연결한 동작이 없어요."));
+                continue;
+            }
+
+            String packageName = prefs.getSlotPackage(slot);
             if (TextUtils.isEmpty(packageName)) {
                 checks.add(new Check(name, false, "연결한 앱이 없어요."));
                 continue;

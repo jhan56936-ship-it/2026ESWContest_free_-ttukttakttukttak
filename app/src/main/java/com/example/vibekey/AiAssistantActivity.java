@@ -1,6 +1,5 @@
 package com.example.vibekey;
 
-import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.os.Bundle;
@@ -10,10 +9,12 @@ import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.core.content.ContextCompat;
 
 import com.google.android.material.button.MaterialButton;
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 
 /**
  * 말로 물어보고 소리로 답을 듣는 AI 도우미 화면입니다. (제미나이 API 사용)
@@ -172,7 +173,7 @@ public class AiAssistantActivity extends BaseActivity {
         wrapper.setPadding(pad, pad, pad, 0);
         wrapper.addView(input);
 
-        new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle(R.string.ai_type)
                 .setView(wrapper)
                 .setPositiveButton("물어보기", new DialogInterface.OnClickListener() {
@@ -228,6 +229,11 @@ public class AiAssistantActivity extends BaseActivity {
         prefs.setLastAiAnswer(reply.answer);
         SpeechManager.get(this).speak(reply.answer);
 
+        if (!TextUtils.isEmpty(reply.action)) {
+            confirmAction(reply);
+            return;
+        }
+
         if (TextUtils.isEmpty(reply.openPackage)) {
             return;
         }
@@ -235,7 +241,7 @@ public class AiAssistantActivity extends BaseActivity {
         if (item == null) {
             return; // AI가 없는 앱을 골랐다면 그냥 답만 보여 드립니다.
         }
-        new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("앱을 열까요?")
                 .setMessage("'" + item.label + "'을(를) 지금 열어 드릴까요?")
                 .setPositiveButton("네, 열어 주세요", new DialogInterface.OnClickListener() {
@@ -249,9 +255,70 @@ public class AiAssistantActivity extends BaseActivity {
                 .show();
     }
 
+    /** AI가 전화·문자·길찾기를 하겠다고 골랐을 때, 실제로 실행하기 전에 한 번 더 확인합니다. */
+    private void confirmAction(final GeminiClient.AssistantReply reply) {
+        String title;
+        String message;
+        switch (reply.action) {
+            case "dial":
+                title = "전화를 걸까요?";
+                message = reply.actionNumber + " 으로 전화 걸 준비를 할까요?";
+                break;
+            case "sms":
+                title = "문자를 보낼까요?";
+                message = reply.actionNumber + " 으로 문자 보낼 준비를 할까요?";
+                break;
+            case "maps":
+                title = "길을 찾을까요?";
+                message = "'" + reply.actionText + "'(으)로 가는 길을 찾아 드릴까요?";
+                break;
+            default:
+                return;
+        }
+        if ("maps".equals(reply.action) && TextUtils.isEmpty(reply.actionText)) {
+            return;
+        }
+        if (("dial".equals(reply.action) || "sms".equals(reply.action))
+                && TextUtils.isEmpty(reply.actionNumber)) {
+            return;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton("네", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        SpeechManager.get(AiAssistantActivity.this).stop();
+                        runAction(reply);
+                    }
+                })
+                .setNegativeButton("아니요", null)
+                .show();
+    }
+
+    private void runAction(GeminiClient.AssistantReply reply) {
+        boolean ok;
+        switch (reply.action) {
+            case "dial":
+                ok = IntentActions.dial(this, reply.actionNumber);
+                break;
+            case "sms":
+                ok = IntentActions.sms(this, reply.actionNumber, reply.actionText);
+                break;
+            case "maps":
+                ok = IntentActions.navigate(this, reply.actionText);
+                break;
+            default:
+                ok = false;
+        }
+        if (!ok) {
+            Toast.makeText(this, "그 동작을 실행하지 못했어요.", Toast.LENGTH_LONG).show();
+        }
+    }
+
     private void showNeedApiKey() {
         answerText.setText(R.string.ai_no_key);
-        new AlertDialog.Builder(this)
+        new MaterialAlertDialogBuilder(this)
                 .setTitle("AI 준비가 필요해요")
                 .setMessage(getString(R.string.ai_no_key))
                 .setPositiveButton("설정 열기", new DialogInterface.OnClickListener() {

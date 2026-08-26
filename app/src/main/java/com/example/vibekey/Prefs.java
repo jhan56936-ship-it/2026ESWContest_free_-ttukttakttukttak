@@ -54,6 +54,9 @@ public final class Prefs {
     }
 
     public boolean hasSlot(int slot) {
+        if (!"APP".equals(getSlotActionType(slot))) {
+            return !TextUtils.isEmpty(getSlotLabel(slot));
+        }
         return !TextUtils.isEmpty(getSlotPackage(slot));
     }
 
@@ -61,6 +64,7 @@ public final class Prefs {
         prefs.edit()
                 .putString(packageKey(slot), packageName)
                 .putString(labelKey(slot), label)
+                .putString(actionTypeKey(slot), "APP")
                 .apply();
     }
 
@@ -68,6 +72,48 @@ public final class Prefs {
         prefs.edit()
                 .remove(packageKey(slot))
                 .remove(labelKey(slot))
+                .remove(actionTypeKey(slot))
+                .remove(actionNumberKey(slot))
+                .remove(actionTextKey(slot))
+                .apply();
+    }
+
+    // ---------------------------------------------------------------- 버튼 슬롯: 빠른 동작
+    // 앱을 여는 대신 전화 걸기·문자 보내기·길찾기처럼 정해진 동작을 바로 실행하는 슬롯입니다.
+
+    public static String actionTypeKey(int slot) {
+        return "slot_action_type_" + slot;
+    }
+
+    public static String actionNumberKey(int slot) {
+        return "slot_action_number_" + slot;
+    }
+
+    public static String actionTextKey(int slot) {
+        return "slot_action_text_" + slot;
+    }
+
+    /** "APP"(기본값) · "DIAL" · "SMS" · "MAPS" */
+    public String getSlotActionType(int slot) {
+        return prefs.getString(actionTypeKey(slot), "APP");
+    }
+
+    public String getSlotActionNumber(int slot) {
+        return prefs.getString(actionNumberKey(slot), "");
+    }
+
+    public String getSlotActionText(int slot) {
+        return prefs.getString(actionTextKey(slot), "");
+    }
+
+    /** 버튼에 앱 대신 빠른 동작(전화·문자·길찾기)을 연결합니다. */
+    public void setSlotAction(int slot, String type, String label, String number, String text) {
+        prefs.edit()
+                .putString(actionTypeKey(slot), type)
+                .putString(labelKey(slot), label)
+                .putString(actionNumberKey(slot), number == null ? "" : number)
+                .putString(actionTextKey(slot), text == null ? "" : text)
+                .putString(packageKey(slot), "")
                 .apply();
     }
 

@@ -1,6 +1,5 @@
 package com.example.vibekey;
 
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Build;
@@ -14,8 +13,10 @@ import android.widget.EditText;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.core.content.ContextCompat;
 
+import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.switchmaterial.SwitchMaterial;
 
 /**
@@ -120,7 +121,7 @@ public class SettingsActivity extends BaseActivity {
             Toast.makeText(this, "먼저 키를 저장해 주세요.", Toast.LENGTH_LONG).show();
             return;
         }
-        final AlertDialog waiting = new AlertDialog.Builder(this)
+        final AlertDialog waiting = new MaterialAlertDialogBuilder(this)
                 .setMessage("AI에 연결해 보는 중이에요…")
                 .setCancelable(false)
                 .show();
@@ -129,7 +130,7 @@ public class SettingsActivity extends BaseActivity {
             @Override
             public void onSuccess(String result) {
                 dismiss(waiting);
-                new AlertDialog.Builder(SettingsActivity.this)
+                new MaterialAlertDialogBuilder(SettingsActivity.this)
                         .setTitle("연결 성공")
                         .setMessage("AI와 잘 연결되었어요.\n이제 말로 물어보실 수 있습니다.")
                         .setPositiveButton(R.string.ok, null)
@@ -141,7 +142,7 @@ public class SettingsActivity extends BaseActivity {
             @Override
             public void onError(String friendlyMessage) {
                 dismiss(waiting);
-                new AlertDialog.Builder(SettingsActivity.this)
+                new MaterialAlertDialogBuilder(SettingsActivity.this)
                         .setTitle("연결 실패")
                         .setMessage(friendlyMessage)
                         .setPositiveButton(R.string.ok, null)
