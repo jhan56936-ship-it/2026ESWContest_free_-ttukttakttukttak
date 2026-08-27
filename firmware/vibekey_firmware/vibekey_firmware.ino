@@ -50,9 +50,12 @@
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include <esp_heap_caps.h>
+#include <esp_sleep.h>
+#include <driver/gpio.h>
 
 #include "vkp_frame.h"
 #include "press_fsm.h"
+#include "press_buffer.h"
 
 using namespace vkp;
 
@@ -76,6 +79,31 @@ static const uint8_t  MAX_RETRY      = 3;
  * 기기가 스스로 복구해야 합니다.
  */
 static const uint32_t WDT_TIMEOUT_MS = 5000;
+
+// ---------------------------------------------------------------- 저전력
+//
+// 이 기기는 폰에서 전원을 얻는 유선 액세서리입니다. 하루 종일 꽂아 두는 물건이므로
+// 아무 일도 안 하는 동안 폰 배터리를 먹으면 안 됩니다.
+//
+// 다만 USB 를 쓰는 기기가 잠드는 것은 위험합니다. 그래서 조건을 좁혔습니다.
+//
+//   잠드는 조건 (모두 만족해야 함)
+//     · 폰이 듣고 있지 않다        — DTR 이 내려가 있음 (앱이 꺼졌거나 USB 만 꽂힘)
+//     · 버튼이 하나도 안 눌려 있다 — 눌린 채면 레벨 깨움이 즉시 걸려 의미가 없음
+//     · 보낼 것이 남아 있지 않다   — 오프라인 버퍼가 비어 있음
+//     · 마지막 활동 후 충분히 지났다
+//
+//   깨어나는 조건
+//     · 버튼 눌림 (GPIO 로우 레벨)  — 사용자가 누르면 즉시
+//     · 타이머 (0.5초)               — 깨어나 DTR 을 다시 봅니다. 앱이 다시 붙으면
+//                                      최대 0.5초 안에 알아차립니다. USB 활동으로
+//                                      직접 깨우는 기능은 이 칩에서 쓸 수 없습니다.
+//
+// 한 번에 오래 자지 않고 짧게 끊어 자는 이유는 워치독 때문입니다. 자는 동안에는
+// 어느 태스크도 워치독을 먹이지 못하므로, 슬라이스가 워치독 시간을 넘으면
+// 멀쩡한 기기가 재시작해 버립니다.
+static const uint32_t SLEEP_IDLE_MS  = 3000;    // 이만큼 조용하면 잠들기 시작
+static const uint32_t SLEEP_SLICE_US = 500000;  // 한 번에 자는 시간 (0.5초)
 
 // ---------------------------------------------------------------- 핀맵
 //  XIAO ESP32-S3 (D 표기 → 실제 GPIO)
@@ -127,7 +155,8 @@ static struct {
     uint16_t ackTimeout;    // 세 번 다 실패한 횟수
     uint16_t lastLatencyUs; // 마지막 접점→송출 지연
     uint16_t maxLatencyUs;  // 최악값
-} stats = {0, 0, 0, 0, 0};
+    uint32_t sleeps;        // 절전에 들어간 횟수 (저전력이 실제로 도는지 확인용)
+} stats = {0, 0, 0, 0, 0, 0};
 
 /**
  * ISR이 큐에 넣지 못하고 버린 접점 변화 수.
@@ -242,12 +271,18 @@ static void sendHello() {
     writeFrame(0, T_HELLO, p, sizeof(p));
 }
 
+// 폰이 없는 동안 눌린 것을 담아 둡니다. protoTask 만 건드리므로 잠금이 필요 없습니다.
+static vkbuf::PressBuffer offline;
+
 static void sendStats() {
     uint16_t crcErr  = (uint16_t)rx.crcErrors;
     uint16_t up      = (uint16_t)(millis() / 1000);
     uint16_t freeKb  = (uint16_t)(esp_get_free_heap_size() / 1024);
     uint16_t minKb   = (uint16_t)(esp_get_minimum_free_heap_size() / 1024);
-    uint16_t drops   = (uint16_t)edgeDrops;
+    // "놓친 입력" = ISR 큐에서 흘린 것 + 오프라인 버퍼에서 밀려나거나 만료된 것.
+    // 사용자 입장에서는 둘 다 "눌렀는데 아무 일도 안 일어난" 경우입니다.
+    uint32_t missedAll = edgeDrops + offline.missed();
+    uint16_t drops   = (uint16_t)(missedAll > 0xFFFF ? 0xFFFF : missedAll);
 
     // payload 16바이트 = 규격 최대치. 더 넣으려면 종류를 나눠야 합니다.
     uint8_t p[16] = {
@@ -263,6 +298,57 @@ static void sendStats() {
     writeFrame(0, T_STATS, p, sizeof(p));
 }
 
+/** 버튼이 하나라도 눌려 있으면 true (INPUT_PULLUP 이라 눌림 = LOW) */
+static bool anyButtonDown() {
+    for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+        if (digitalRead(BUTTON_PINS[i]) == LOW) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * 조건이 맞으면 아주 잠깐 잠듭니다.
+ * @return 실제로 잠들었으면 true
+ */
+static bool maybeLightSleep(bool linkUp, uint32_t lastActivityMs) {
+    if (linkUp) {
+        return false;                                   // 폰이 듣고 있습니다 — 자면 안 됩니다
+    }
+    if (!offline.empty()) {
+        return false;                                   // 전할 것이 남아 있습니다
+    }
+    if ((uint32_t)(millis() - lastActivityMs) < SLEEP_IDLE_MS) {
+        return false;                                   // 아직 조용해진 지 얼마 안 됐습니다
+    }
+    if (anyButtonDown()) {
+        return false;                                   // 눌린 채면 레벨 깨움이 즉시 걸립니다
+    }
+
+    // 버튼이 눌리는 순간(LOW) 깨어납니다.
+    for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+        gpio_wakeup_enable((gpio_num_t)BUTTON_PINS[i], GPIO_INTR_LOW_LEVEL);
+    }
+    esp_sleep_enable_gpio_wakeup();
+    esp_sleep_enable_timer_wakeup(SLEEP_SLICE_US);
+    // USB 활동으로 깨우는 기능은 이 칩·코어 조합에서 쓸 수 없습니다.
+    // (esp_sleep_enable_usb_wakeup 은 고속 USB-OTG 전용이고, ESP32-S3 의 CDC 는
+    //  USB Serial/JTAG 라 해당하지 않습니다.)
+    // 대신 위의 타이머 깨움이 그 역할을 합니다 — 0.5초마다 깨어나 DTR 을 다시 보므로
+    // 앱이 다시 붙으면 최대 0.5초 안에 알아차립니다.
+
+    esp_light_sleep_start();
+
+    // 깨어난 뒤에는 깨움 설정을 되돌립니다. 남겨 두면 다음 판단에 영향을 줍니다.
+    for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
+        gpio_wakeup_disable((gpio_num_t)BUTTON_PINS[i]);
+    }
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    stats.sleeps++;
+    return true;
+}
+
 static void protoTask(void* /*arg*/) {
     PressMsg  pending;                 // ACK를 기다리는 중인 이벤트
     bool      waitingAck = false;
@@ -270,6 +356,7 @@ static void protoTask(void* /*arg*/) {
     uint8_t   retry      = 0;
     uint32_t  sentAtMs   = 0;
     bool      linkUp     = false;
+    uint32_t  lastActive = millis();   // 마지막으로 뭔가 일어난 시각
 
     esp_task_wdt_add(nullptr);
     for (;;) {
@@ -278,9 +365,11 @@ static void protoTask(void* /*arg*/) {
         bool nowUp = (bool)Serial;
         if (nowUp != linkUp) {
             linkUp = nowUp;
+            lastActive = millis();
             if (linkUp) {
                 rx.reset();
                 sendHello();
+                // 끊겨 있는 동안 눌린 것이 있으면 이제부터 하나씩 되살립니다.
             }
         }
 
@@ -306,8 +395,33 @@ static void protoTask(void* /*arg*/) {
             }
         }
 
+        // --- 2.5 폰이 없는 동안 눌린 것은 보내지 말고 담아 둡니다 ---
+        //     예전에는 그대로 내보내고 ACK 를 세 번 기다리다 버렸습니다.
+        //     그동안 다음 입력이 큐에 쌓여 결국 사라졌습니다.
+        if (!linkUp) {
+            PressMsg m;
+            while (xQueueReceive(pressQueue, &m, 0) == pdTRUE) {
+                offline.push(m.button, m.kind, millis());
+            }
+        }
+
         // --- 3. 확정된 누름을 프레임으로 내보내기 ---
-        if (!waitingAck && xQueueReceive(pressQueue, &pending, 0) == pdTRUE) {
+        //     담아 둔 것이 있으면 그것을 먼저 비웁니다. 누른 순서를 지킵니다.
+        bool haveEvent = false;
+        if (!waitingAck && linkUp && !offline.empty()) {
+            vkbuf::Item it;
+            if (offline.popReplayable(millis(), it)) {
+                pending.button  = it.button;
+                pending.kind    = it.kind;          // REPLAY_FLAG 가 세워져 있습니다
+                pending.stampUs = micros();         // 되살린 것의 지연은 의미가 없습니다
+                haveEvent = true;
+            }
+        }
+        if (!waitingAck && !haveEvent && xQueueReceive(pressQueue, &pending, 0) == pdTRUE) {
+            haveEvent = true;
+        }
+        if (haveEvent) {
+            lastActive = millis();
             uint32_t latency = micros() - pending.stampUs;
             if (latency > 65535) {
                 latency = 65535;
@@ -346,7 +460,16 @@ static void protoTask(void* /*arg*/) {
                 // 횟수만 세어 두고, 앱의 자가진단 화면이 STATS로 읽어 가게 합니다.
                 waitingAck = false;
                 stats.ackTimeout++;
+                // 답이 없다는 것은 앱이 죽었다는 뜻입니다. 버리지 말고 담아 둡니다.
+                if (!(pending.kind & vkbuf::REPLAY_FLAG)) {
+                    offline.push(pending.button, pending.kind, millis());
+                }
             }
+        }
+
+        // --- 5. 할 일이 없고 폰도 안 듣고 있으면 잠깐 잠듭니다 ---
+        if (!waitingAck && maybeLightSleep(linkUp, lastActive)) {
+            continue;   // 깨어나자마자 워치독부터 먹입니다
         }
 
         vTaskDelay(pdMS_TO_TICKS(5));

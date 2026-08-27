@@ -14,6 +14,7 @@
 
 #include "../vibekey_firmware/vkp_frame.h"
 #include "../vibekey_firmware/press_fsm.h"
+#include "../vibekey_firmware/press_buffer.h"
 
 using namespace vkp;
 
@@ -421,6 +422,103 @@ static void test_single_tap_resolves_after_gap() {
 
 // ---------------------------------------------------------------- 실행
 
+
+// ---------------------------------------------------------------- 오프라인 버퍼
+
+static void test_buffer_replays_recent_presses() {
+    vkbuf::PressBuffer b;
+    b.clear();
+    b.push(1, 0, 1000);
+    b.push(2, 1, 1200);
+
+    vkbuf::Item it;
+    check(b.popReplayable(1500, it), "폰이 돌아오면 방금 누른 것은 되살아난다");
+    check(it.button == 1, "누른 순서를 지킨다 (먼저 누른 1번이 먼저)");
+    check((it.kind & vkbuf::REPLAY_FLAG) != 0, "되살린 것은 표시가 붙는다");
+    check((it.kind & 0x7F) == 0, "표시를 떼면 원래 누름 방식이 남는다");
+
+    check(b.popReplayable(1500, it), "두 번째도 되살아난다");
+    check(it.button == 2, "두 번째는 2번 버튼");
+    check(!b.popReplayable(1500, it), "더 없으면 false");
+    check(b.missed() == 0, "정상적으로 다 되살렸으면 놓친 것은 없다");
+}
+
+static void test_buffer_drops_stale_presses_instead_of_firing_them() {
+    vkbuf::PressBuffer b;
+    b.clear();
+    b.push(1, 0, 1000);                       // 10분 전에 누른 "전화"
+    vkbuf::Item it;
+    // 나이 제한을 넘겼습니다. 지금 와서 전화를 걸면 고장보다 나쁩니다.
+    check(!b.popReplayable(1000 + vkbuf::REPLAY_MAX_AGE_MS + 1, it),
+          "너무 오래된 누름은 되살리지 않는다");
+    check(b.expired() == 1, "대신 놓친 입력으로 센다");
+    check(b.missed() == 1, "사용자에게 전달되지 못한 수에 포함된다");
+}
+
+static void test_buffer_keeps_newest_when_full() {
+    vkbuf::PressBuffer b;
+    b.clear();
+    for (int i = 0; i < vkbuf::CAPACITY + 3; i++) {
+        b.push((uint8_t)(i % 3 + 1), 0, (uint32_t)(1000 + i));
+    }
+    check(b.size() == vkbuf::CAPACITY, "용량을 넘지 않는다");
+    check(b.overwritten() == 3, "밀려난 3개를 센다");
+
+    vkbuf::Item it;
+    check(b.popReplayable(1100, it), "가장 오래된 것부터 나온다");
+    // 0,1,2 가 밀려났으므로 남은 것 중 가장 오래된 것은 i=3
+    check(it.button == (uint8_t)(3 % 3 + 1), "밀려난 뒤 남은 가장 오래된 항목이 먼저");
+}
+
+static void test_buffer_survives_millis_wraparound() {
+    vkbuf::PressBuffer b;
+    b.clear();
+    // millis() 는 약 49.7일마다 0으로 돌아갑니다. 그 순간에도 나이 계산이 맞아야 합니다.
+    uint32_t before = 0xFFFFF000u;
+    b.push(1, 0, before);
+    uint32_t after = before + 500;            // 되감겨서 작은 수가 됩니다
+    vkbuf::Item it;
+    check(b.popReplayable(after, it), "되감김 직후에도 나이를 올바로 계산한다");
+    check(it.button == 1, "값이 온전하다");
+}
+
+// ---------------------------------------------------------------- 재시작 후 SEQ
+
+static void test_seq_resync_after_restart_has_no_duplicate_execution() {
+    // 상황: 기기가 프레임을 보냈는데 ACK 를 받기 전에 워치독으로 재시작했습니다.
+    //       재시작하면 SEQ 가 0부터 다시 시작합니다.
+    //       폰은 "마지막에 실행한 SEQ" 하나만 기억하므로, 재시작 전 SEQ 와
+    //       우연히 같으면 새 누름을 중복으로 오인해 무시할 수 있습니다.
+    //       그래서 기기는 재시작 직후 HELLO 를 먼저 보내고, 폰은 HELLO 를 받으면
+    //       중복 판정 상태를 지웁니다. 이 테스트는 그 계약을 고정합니다.
+    Decoder dec;
+    Frame f;
+    uint8_t buf[64];
+
+    // 재시작 전: SEQ 7 로 1번 버튼
+    uint8_t n = encode(7, T_EVT_PRESS, (const uint8_t*)"\x01\x00\x10\x00", 4, buf);
+    bool got = false;
+    for (uint8_t i = 0; i < n; i++) { if (dec.push(buf[i], f)) got = true; }
+    check(got && f.seq == 7, "재시작 전 프레임을 받았다");
+
+    // 재시작: HELLO 가 먼저 온다
+    uint8_t hello[6] = {1, 3, 0, 3, 0, 6};   // 재시작 원인 6 = 태스크 워치독
+    n = encode(0, T_HELLO, hello, sizeof(hello), buf);
+    got = false;
+    for (uint8_t i = 0; i < n; i++) { if (dec.push(buf[i], f)) got = true; }
+    check(got && f.type == T_HELLO, "재시작 직후 HELLO 가 먼저 온다");
+    check(f.u8(5) == 6, "HELLO 가 재시작 원인을 싣고 온다 (워치독)");
+
+    // 재시작 후: SEQ 가 0 부터 다시 시작한다
+    n = encode(0, T_EVT_PRESS, (const uint8_t*)"\x02\x00\x20\x00", 4, buf);
+    got = false;
+    for (uint8_t i = 0; i < n; i++) { if (dec.push(buf[i], f)) got = true; }
+    check(got && f.seq == 0, "재시작 후 SEQ 는 0 부터 다시 시작한다");
+    check(f.u8(0) == 2, "새 누름이 온전히 전달된다");
+    check(dec.crcErrors == 0 && dec.framingErrors == 0,
+          "재시작 경계에서 프레임이 깨지지 않는다");
+}
+
 int main() {
     std::printf("바이브키 펌웨어 단위 테스트\n");
     std::printf("---------------------------------------------\n");
@@ -440,6 +538,11 @@ int main() {
     test_tremor_guard_blocks_repeat();
     test_double_tap_when_enabled();
     test_single_tap_resolves_after_gap();
+    test_buffer_replays_recent_presses();
+    test_buffer_drops_stale_presses_instead_of_firing_them();
+    test_buffer_keeps_newest_when_full();
+    test_buffer_survives_millis_wraparound();
+    test_seq_resync_after_restart_has_no_duplicate_execution();
 
     std::printf("---------------------------------------------\n");
     std::printf("통과 %d개 / 실패 %d개\n", g_pass, g_fail);
