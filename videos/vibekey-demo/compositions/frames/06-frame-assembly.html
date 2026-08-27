@@ -123,7 +123,9 @@
       /* 훑은 결과가 CRC 블록 안의 실제 값이 된다 */
       tl.to("#fa-crcval", { opacity: 0, y: -14, duration: 0.22, ease: "power2.in" }, 10.9);
       tl.set("#fa-crcval", { textContent: "29B1" }, 11.12);
-      tl.fromTo("#fa-crcval", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.36, ease: "back.out(2)" }, 11.14);
+      /* immediateRender:false — 이게 없으면 GSAP 가 타임라인을 만드는 순간
+         시작 상태(opacity 0)를 적용해 버려서, 11초에 등장할 값이 0초부터 사라진다. */
+      tl.fromTo("#fa-crcval", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.36, ease: "back.out(2)", immediateRender: false }, 11.14);
       tl.to("#fa-b5", { borderColor: "rgba(11,87,208,0.55)", backgroundColor: "rgba(11,87,208,0.12)", duration: 0.4, ease: "power2.out" }, 11.14);
 
       /* ---- Scene 4 (14.0–18.0) : 한 덩어리로 모이고 mono 한 줄 ---- */

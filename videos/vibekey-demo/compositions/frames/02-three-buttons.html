@@ -13,39 +13,41 @@
 
     .tb-svg { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
     .tb-draw { fill: none; stroke: #101418; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
-    .tb-lead { fill: none; stroke-width: 2; stroke-linecap: round; }
+    .tb-lead { fill: none; stroke-width: 2.5; stroke-linecap: round; }
 
-    .tb-wordmark {
-      position: absolute; left: 0; top: 176px; width: 1920px; text-align: center;
-      font-family: "Gothic A1", sans-serif; font-weight: 700; font-size: 96px;
-      letter-spacing: -0.03em; color: #101418; opacity: 0;
-    }
+    /* 왼쪽 기둥 — 이름과 설명 */
     .tb-eyebrow {
-      position: absolute; left: 0; top: 132px; width: 1920px; text-align: center;
+      position: absolute; left: 130px; top: 296px;
       font-family: "Gothic A1", sans-serif; font-weight: 600; font-size: 21px;
       letter-spacing: 0.08em; color: #0B57D0; opacity: 0;
     }
-
-    .tb-chip {
-      position: absolute; display: flex; align-items: center; gap: 10px;
-      padding: 10px 20px; border-radius: 100px;
-      background: rgba(11, 87, 208, 0.04); border: 1.5px solid rgba(11, 87, 208, 0.2);
-      font-family: "Gothic A1", sans-serif; font-weight: 600; font-size: 26px; color: #101418;
-      opacity: 0; white-space: nowrap;
+    .tb-wordmark {
+      position: absolute; left: 130px; top: 330px; width: 520px;
+      font-family: "Gothic A1", sans-serif; font-weight: 700; font-size: 104px;
+      letter-spacing: -0.03em; line-height: 1; color: #101418; opacity: 0;
     }
-    .tb-dot { width: 14px; height: 14px; border-radius: 50%; }
-    .tb-num { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 22px; }
-
     .tb-note {
-      position: absolute; left: 1244px; top: 388px; width: 420px;
-      font-family: "Noto Sans KR", sans-serif; font-weight: 400; font-size: 27px;
-      line-height: 1.6; color: #41505E; opacity: 0;
+      position: absolute; left: 132px; top: 468px; width: 470px;
+      font-family: "Noto Sans KR", sans-serif; font-weight: 400; font-size: 29px;
+      line-height: 1.62; color: #41505E; opacity: 0;
     }
     .tb-note b { font-weight: 700; color: #101418; }
 
+    /* 버튼 라벨 — 버튼 바로 아래, 아무것도 가로지르지 않는다 */
+    .tb-chip {
+      position: absolute; top: 706px; width: 172px; height: 62px;
+      display: flex; align-items: center; justify-content: center; gap: 9px;
+      border-radius: 100px;
+      background: rgba(11, 87, 208, 0.04); border: 1.5px solid rgba(11, 87, 208, 0.2);
+      font-family: "Gothic A1", sans-serif; font-weight: 600; font-size: 27px; color: #101418;
+      opacity: 0; white-space: nowrap;
+    }
+    .tb-dot { width: 13px; height: 13px; border-radius: 50%; flex: none; }
+    .tb-num { font-family: "JetBrains Mono", monospace; font-weight: 700; font-size: 22px; }
+
     .tb-usbnote {
-      position: absolute; left: 0; top: 774px; width: 1920px; text-align: center;
-      font-family: "Noto Sans KR", sans-serif; font-weight: 400; font-size: 29px;
+      position: absolute; left: 0; top: 826px; width: 1920px; text-align: center;
+      font-family: "Noto Sans KR", sans-serif; font-weight: 400; font-size: 30px;
       color: #41505E; opacity: 0;
     }
     .tb-usbnote b { font-weight: 700; color: #101418; }
@@ -56,48 +58,45 @@
 
     <div id="tb-stage" class="clip tb-stage" data-start="0" data-duration="18" data-track-index="1">
       <svg class="tb-svg" viewBox="0 0 1920 1080">
-        <!-- 기판 외곽 -->
-        <path id="tb-board" class="tb-draw" d="M470 356 L980 356 Q996 356 996 372 L996 636 Q996 652 980 652 L470 652 Q454 652 454 636 L454 372 Q454 356 470 356 Z" />
+        <!-- 기판 -->
+        <path id="tb-board" class="tb-draw" d="M716 300 L1224 300 Q1240 300 1240 316 L1240 644 Q1240 660 1224 660 L716 660 Q700 660 700 644 L700 316 Q700 300 716 300 Z" />
         <!-- USB-C 커넥터 -->
-        <path id="tb-usb" class="tb-draw" d="M996 452 L1052 452 Q1062 452 1062 462 L1062 546 Q1062 556 1052 556 L996 556" />
-        <!-- MCU 칩 -->
-        <path id="tb-mcu" class="tb-draw" d="M700 430 L860 430 L860 540 L700 540 Z" />
+        <path id="tb-usb" class="tb-draw" d="M1240 440 L1296 440 Q1306 440 1306 450 L1306 530 Q1306 540 1296 540 L1240 540" />
+        <!-- MCU -->
+        <path id="tb-mcu" class="tb-draw" d="M820 352 L1120 352 L1120 452 L820 452 Z" />
         <!-- 버튼 3개 -->
-        <circle id="tb-b1" class="tb-draw" cx="530" cy="504" r="34" />
-        <circle id="tb-b2" class="tb-draw" cx="616" cy="504" r="34" />
-        <circle id="tb-b3" class="tb-draw" cx="702" cy="590" r="34" />
-        <!-- 버튼 채움 (점등용) -->
-        <circle id="tb-f1" cx="530" cy="504" r="30" fill="#0B57D0" opacity="0" />
-        <circle id="tb-f2" cx="616" cy="504" r="30" fill="#12703A" opacity="0" />
-        <circle id="tb-f3" cx="702" cy="590" r="30" fill="#B26A00" opacity="0" />
-        <!-- 지시선 -->
-        <path id="tb-l1" class="tb-lead" stroke="#0B57D0" d="M530 466 L530 300 L1180 300" />
-        <path id="tb-l2" class="tb-lead" stroke="#12703A" d="M616 466 L616 250 L1180 250" />
-        <path id="tb-l3" class="tb-lead" stroke="#B26A00" d="M736 590 L1180 590" />
-        <!-- USB 케이블 -->
-        <path id="tb-cable" class="tb-draw" stroke="#101418" d="M1062 504 L1420 504" />
-        <!-- 케이블 위를 흐르는 빛 -->
-        <path id="tb-flow" class="tb-lead" stroke="#0B57D0" stroke-width="7" d="M1062 504 L1420 504" opacity="0" />
-        <!-- 폰 실루엣 -->
-        <path id="tb-phone" class="tb-draw" d="M1444 356 L1600 356 Q1616 356 1616 372 L1616 636 Q1616 652 1600 652 L1444 652 Q1428 652 1428 636 L1428 372 Q1428 356 1444 356 Z" />
-        <!-- MCU 라벨 -->
-        <text id="tb-mculabel" x="780" y="492" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="21" font-weight="600" fill="#41505E" opacity="0">ESP32-S3</text>
+        <circle id="tb-b1" class="tb-draw" cx="750" cy="566" r="42" />
+        <circle id="tb-b2" class="tb-draw" cx="940" cy="566" r="42" />
+        <circle id="tb-b3" class="tb-draw" cx="1130" cy="566" r="42" />
+        <circle id="tb-f1" cx="750" cy="566" r="37" fill="#0B57D0" opacity="0" />
+        <circle id="tb-f2" cx="940" cy="566" r="37" fill="#12703A" opacity="0" />
+        <circle id="tb-f3" cx="1130" cy="566" r="37" fill="#B26A00" opacity="0" />
+        <!-- 지시선: 버튼에서 바로 아래로만. 무엇도 가로지르지 않는다 -->
+        <path id="tb-l1" class="tb-lead" stroke="#0B57D0" d="M750 608 L750 700" />
+        <path id="tb-l2" class="tb-lead" stroke="#12703A" d="M940 608 L940 700" />
+        <path id="tb-l3" class="tb-lead" stroke="#B26A00" d="M1130 608 L1130 700" />
+        <!-- 케이블과 폰 -->
+        <path id="tb-cable" class="tb-draw" d="M1306 490 L1500 490" />
+        <path id="tb-flow" class="tb-lead" stroke="#0B57D0" stroke-width="7" d="M1306 490 L1500 490" opacity="0" />
+        <path id="tb-phone" class="tb-draw" d="M1516 340 L1692 340 Q1708 340 1708 356 L1708 624 Q1708 640 1692 640 L1516 640 Q1500 640 1500 624 L1500 356 Q1500 340 1516 340 Z" />
+        <text id="tb-mculabel" x="970" y="412" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="24" font-weight="600" fill="#41505E" opacity="0">ESP32-S3</text>
+        <text id="tb-phonelabel" x="1604" y="500" text-anchor="middle" font-family="Gothic A1, sans-serif" font-size="27" font-weight="600" fill="#41505E" opacity="0">폰</text>
       </svg>
 
       <div class="tb-eyebrow" id="tb-eyebrow">버튼 세 개, 케이블 하나</div>
       <div class="tb-wordmark" id="tb-wordmark">바이브키</div>
+      <div class="tb-note" id="tb-note">버튼은 <b>세 개뿐</b>입니다.<br />외울 것도, 찾을 것도 없습니다.</div>
 
-      <div class="tb-chip" id="tb-chip1" style="left: 1196px; top: 276px;">
+      <div class="tb-chip" id="tb-chip1" style="left: 664px;">
         <span class="tb-dot" style="background: #0B57D0"></span><span class="tb-num" style="color:#0B57D0">1</span>전화
       </div>
-      <div class="tb-chip" id="tb-chip2" style="left: 1196px; top: 226px;">
+      <div class="tb-chip" id="tb-chip2" style="left: 854px;">
         <span class="tb-dot" style="background: #12703A"></span><span class="tb-num" style="color:#12703A">2</span>문자
       </div>
-      <div class="tb-chip" id="tb-chip3" style="left: 1196px; top: 566px;">
+      <div class="tb-chip" id="tb-chip3" style="left: 1044px;">
         <span class="tb-dot" style="background: #B26A00"></span><span class="tb-num" style="color:#B26A00">3</span>길찾기
       </div>
 
-      <div class="tb-note" id="tb-note">버튼은 <b>세 개뿐</b>입니다.<br />외울 것도, 찾을 것도 없습니다.</div>
       <div class="tb-usbnote" id="tb-usbnote"><b>USB로 꽂으면 끝.</b> 인터넷도, 계정도 필요 없습니다.</div>
     </div>
   </div>
@@ -108,7 +107,6 @@
       window.__timelines = window.__timelines || {};
       var tl = gsap.timeline({ paused: true });
 
-      /* svg-path-draw: 각 path 의 실제 길이를 재서 dash 로 그린다 */
       function draw(sel, at, dur, ease) {
         var el = document.querySelector(sel);
         if (!el) return;
@@ -117,7 +115,7 @@
         tl.to(el, { strokeDashoffset: 0, duration: dur, ease: ease || "power2.inOut" }, at);
       }
 
-      /* ---- Scene 1 (0.0–4.0) : 기기 외곽선이 한 획으로 그려진다 ---- */
+      /* ---- Scene 1 (0.0–4.0) : 기기가 한 획으로 그려진다 ---- */
       draw("#tb-board", 0.2, 1.5);
       draw("#tb-usb", 1.4, 0.5);
       draw("#tb-mcu", 1.7, 0.6);
@@ -126,32 +124,32 @@
       draw("#tb-b2", 2.5, 0.4);
       draw("#tb-b3", 2.7, 0.4);
 
-      /* ---- Scene 2 (4.0–7.0) : 워드마크 ---- */
+      /* ---- Scene 2 (4.0–7.0) : 이름이 붙는다 ---- */
       tl.fromTo("#tb-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 4.1);
-      tl.fromTo("#tb-wordmark", { opacity: 0, y: 34, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.62, ease: "back.out(1.5)" }, 4.5);
+      tl.fromTo("#tb-wordmark", { opacity: 0, y: 36, scale: 0.96, transformOrigin: "0% 50%" }, { opacity: 1, y: 0, scale: 1, duration: 0.65, ease: "back.out(1.5)" }, 4.5);
 
-      /* ---- Scene 3 (7.0–12.0) : 버튼 점등 → 지시선 → 라벨 ---- */
+      /* ---- Scene 3 (7.0–12.0) : 버튼 점등 → 아래로 지시선 → 라벨 ---- */
       var slots = [
         { fill: "#tb-f1", lead: "#tb-l1", chip: "#tb-chip1", at: 7.2 },
-        { fill: "#tb-f2", lead: "#tb-l2", chip: "#tb-chip2", at: 7.55 },
-        { fill: "#tb-f3", lead: "#tb-l3", chip: "#tb-chip3", at: 7.9 }
+        { fill: "#tb-f2", lead: "#tb-l2", chip: "#tb-chip2", at: 7.6 },
+        { fill: "#tb-f3", lead: "#tb-l3", chip: "#tb-chip3", at: 8.0 }
       ];
       for (var i = 0; i < slots.length; i++) {
         var s = slots[i];
         tl.fromTo(s.fill, { opacity: 0, scale: 0.6, transformOrigin: "50% 50%" }, { opacity: 1, scale: 1, duration: 0.36, ease: "back.out(2)" }, s.at);
-        draw(s.lead, s.at + 0.3, 0.65);
-        tl.fromTo(s.chip, { opacity: 0, x: -18 }, { opacity: 1, x: 0, duration: 0.42, ease: "power3.out" }, s.at + 0.85);
+        draw(s.lead, s.at + 0.28, 0.4);
+        tl.fromTo(s.chip, { opacity: 0, y: -14 }, { opacity: 1, y: 0, duration: 0.42, ease: "power3.out" }, s.at + 0.6);
       }
-      tl.fromTo("#tb-note", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 9.6);
+      tl.fromTo("#tb-note", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.58, ease: "power3.out" }, 9.6);
 
-      /* ---- Scene 4 (12.0–18.0) : 케이블이 그려지고 빛이 기기→폰 방향으로 흐른다 ---- */
-      draw("#tb-cable", 12.1, 0.8);
-      draw("#tb-phone", 12.7, 0.9);
-      tl.set("#tb-flow", { opacity: 1, strokeDasharray: "90 268", strokeDashoffset: 358 }, 13.8);
-      tl.to("#tb-flow", { strokeDashoffset: -90, duration: 1.1, ease: "power2.inOut" }, 13.8);
+      /* ---- Scene 4 (12.0–18.0) : 케이블이 그려지고 빛이 기기→폰으로 흐른다 ---- */
+      draw("#tb-cable", 12.1, 0.7);
+      draw("#tb-phone", 12.6, 0.9);
+      tl.fromTo("#tb-phonelabel", { opacity: 0 }, { opacity: 1, duration: 0.35, ease: "power2.out" }, 13.4);
+      tl.set("#tb-flow", { opacity: 1, strokeDasharray: "60 134", strokeDashoffset: 194 }, 13.9);
+      tl.to("#tb-flow", { strokeDashoffset: -60, duration: 1.0, ease: "power2.inOut" }, 13.9);
       tl.to("#tb-flow", { opacity: 0, duration: 0.3, ease: "power1.out" }, 14.9);
-      tl.fromTo("#tb-usbnote", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 14.6);
-      /* 15.2초 이후 정지 */
+      tl.fromTo("#tb-usbnote", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 14.7);
 
       window.__timelines["02-three-buttons"] = tl;
     })();
