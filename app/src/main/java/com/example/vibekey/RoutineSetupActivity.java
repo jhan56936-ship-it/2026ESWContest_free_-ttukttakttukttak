@@ -40,8 +40,14 @@ public class RoutineSetupActivity extends BaseActivity {
             @Override
             public void onClick(View v) {
                 RoutineBridge.refreshShortcuts(RoutineSetupActivity.this);
+                // 루틴 앱의 "앱 실행" 목록은 동적 바로가기를 읽지 않으므로,
+                // 버튼별 실행 항목까지 함께 켜 줘야 루틴에서 고를 수 있습니다.
+                boolean entriesOn = RoutineBridge.setLauncherEntriesEnabled(
+                        RoutineSetupActivity.this, true);
                 Haptics.success(RoutineSetupActivity.this);
-                String message = "바로가기를 만들었어요. 이제 루틴에서 고를 수 있어요.";
+                String message = entriesOn
+                        ? "다 됐어요. 루틴에서 '앱 실행'을 고르면 '바이브키 1번 버튼'이 보여요."
+                        : "바로가기를 만들었어요. 이제 루틴에서 고를 수 있어요.";
                 Toast.makeText(RoutineSetupActivity.this, message, Toast.LENGTH_LONG).show();
                 SpeechManager.get(RoutineSetupActivity.this)
                         .speakIfEnabled(RoutineSetupActivity.this, message);

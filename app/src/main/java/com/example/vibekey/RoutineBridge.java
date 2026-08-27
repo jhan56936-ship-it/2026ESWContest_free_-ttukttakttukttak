@@ -1,7 +1,9 @@
 package com.example.vibekey;
 
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.text.TextUtils;
@@ -126,9 +128,11 @@ public final class RoutineBridge {
         Prefs prefs = Prefs.with(context);
         StringBuilder sb = new StringBuilder();
         sb.append("[삼성 루틴에서 바이브키 실행하기]\n\n");
-        sb.append("방법 1 · 가장 쉬움 (바로가기)\n");
-        sb.append("  루틴 만들기 → 실행할 동작 → '앱 실행' → 바이브키 →\n");
-        sb.append("  '1번 버튼 실행' 같은 바로가기를 고르면 됩니다.\n\n");
+        sb.append("방법 1 · 가장 쉬움 (버튼별 실행 항목)\n");
+        sb.append("  먼저 이 화면의 '바로가기 만들기'를 한 번 눌러 주세요.\n");
+        sb.append("  루틴 만들기 → 실행할 동작 → '앱 실행' →\n");
+        sb.append("  목록에서 '바이브키 1번 버튼'을 고르면 됩니다.\n");
+        sb.append("  (앱 이름처럼 버튼마다 따로 나옵니다.)\n\n");
         sb.append("방법 2 · 자동화 앱(태스커·매크로드로이드)에서\n");
         sb.append("  보낼 브로드캐스트: ").append(ACTION_RUN_BUTTON).append('\n');
         sb.append("  추가 값(정수): button = 1 / 2 / 3\n\n");
@@ -200,6 +204,60 @@ public final class RoutineBridge {
         } catch (Exception e) {
             // 바로가기 등록 실패가 앱 사용을 막아서는 안 됩니다.
             Log.w(TAG, "Failed to refresh shortcuts", e);
+        }
+    }
+
+    // ---------------------------------------------------------------- 루틴용 실행 항목
+
+    /**
+     * 매니페스트에 선언해 둔 activity-alias 이름들입니다.
+     * RoutineActionActivity가 같은 이름으로 버튼 번호를 되읽습니다.
+     */
+    private static final String[] LAUNCHER_ALIASES = {
+            ".RunButton1", ".RunButton2", ".RunButton3", ".RunAi"
+    };
+
+    /**
+     * 삼성 루틴의 "앱 실행" 목록에 버튼별 항목이 뜨도록 켜거나 끕니다.
+     *
+     * 루틴 앱은 동적 바로가기를 읽지 않고 런처에 등록된 실행 항목만 보여 주기 때문에,
+     * 바로가기만으로는 "1번 버튼"을 고를 수 없습니다. 켜면 앱 서랍에도 항목이
+     * 함께 생기므로 기본값은 꺼짐이고, 사용자가 루틴 설정 화면에서 켭니다.
+     *
+     * @return 실제로 켜고 끄기에 성공했는지
+     */
+    public static boolean setLauncherEntriesEnabled(Context context, boolean enabled) {
+        int state = enabled
+                ? PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                : PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        try {
+            PackageManager pm = context.getPackageManager();
+            String packageName = context.getPackageName();
+            for (String alias : LAUNCHER_ALIASES) {
+                pm.setComponentEnabledSetting(
+                        new ComponentName(packageName, packageName + alias),
+                        state,
+                        PackageManager.DONT_KILL_APP);
+            }
+            Log.d(TAG, "launcher entries enabled=" + enabled);
+            return true;
+        } catch (Exception e) {
+            // 켜기에 실패해도 바로가기·딥링크 경로는 그대로 쓸 수 있어야 합니다.
+            Log.w(TAG, "Failed to toggle launcher entries", e);
+            return false;
+        }
+    }
+
+    /** 루틴용 실행 항목이 지금 켜져 있는지 확인합니다. */
+    public static boolean areLauncherEntriesEnabled(Context context) {
+        try {
+            PackageManager pm = context.getPackageManager();
+            String packageName = context.getPackageName();
+            int state = pm.getComponentEnabledSetting(
+                    new ComponentName(packageName, packageName + LAUNCHER_ALIASES[0]));
+            return state == PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+        } catch (Exception e) {
+            return false;
         }
     }
 

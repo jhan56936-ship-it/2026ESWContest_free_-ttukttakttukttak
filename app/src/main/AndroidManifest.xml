@@ -151,6 +151,73 @@
             </intent-filter>
         </activity>
 
+        <!--
+            삼성 "모드 및 루틴"에 버튼별로 따로 보이게 하는 실행 항목들입니다.
+
+            루틴 앱의 "앱 실행" 목록은 동적 바로가기(dynamic shortcut)를 읽지 않고
+            런처에 등록된 실행 항목만 보여 줍니다. 그래서 바로가기와 별개로
+            버튼마다 실행 항목을 하나씩 두어, 루틴에서 "바이브키 1번 버튼"을
+            앱 고르듯 고를 수 있게 했습니다.
+
+            평소에는 꺼 두어 앱 서랍이 지저분해지지 않게 하고,
+            루틴 설정 화면에서 "바로가기 만들기"를 누를 때 켭니다.
+            (RoutineBridge.setLauncherEntriesEnabled)
+
+            어느 버튼으로 들어왔는지는 별칭 이름으로 구분합니다.
+            (RoutineActionActivity.slotFromComponent)
+        -->
+        <activity-alias
+            android:name=".RunButton1"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@drawable/ic_play"
+            android:label="바이브키 1번 버튼"
+            android:targetActivity=".RoutineActionActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".RunButton2"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@drawable/ic_apps"
+            android:label="바이브키 2번 버튼"
+            android:targetActivity=".RoutineActionActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".RunButton3"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@drawable/ic_link"
+            android:label="바이브키 3번 버튼"
+            android:targetActivity=".RoutineActionActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".RunAi"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@drawable/ic_sparkle"
+            android:label="바이브키 AI 도우미"
+            android:targetActivity=".RoutineActionActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
         <!-- USB 시리얼 모니터링 백그라운드 서비스 -->
         <service
             android:name=".UsbSerialService"

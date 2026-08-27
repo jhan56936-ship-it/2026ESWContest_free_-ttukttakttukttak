@@ -1,5 +1,6 @@
 package com.example.vibekey;
 
+import android.content.ComponentName;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
@@ -23,6 +24,10 @@ import java.util.List;
 public class RoutineActionActivity extends AppCompatActivity {
 
     private static final String TAG = "VibeKeyRoutineAct";
+
+    /** 매니페스트의 activity-alias 이름. RoutineBridge와 짝을 맞춰야 합니다. */
+    private static final String ALIAS_BUTTON_PREFIX = ".RunButton";
+    private static final String ALIAS_AI = ".RunAi";
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -93,7 +98,41 @@ public class RoutineActionActivity extends AppCompatActivity {
             }
         }
 
+        // 3) 런처 실행 항목(별칭)으로 들어온 경우
+        //    루틴 앱이 "바이브키 1번 버튼"을 앱처럼 실행하면 액션도 데이터도 없이
+        //    들어오므로, 어떤 별칭이 불렸는지로 판단합니다.
+        int aliasSlot = slotFromComponent(intent);
+        if (aliasSlot > 0) {
+            AppLauncher.runSlot(this, aliasSlot, "routine");
+            return;
+        }
+        if (isAiAlias(intent)) {
+            openAssistant(null);
+            return;
+        }
+
         Log.w(TAG, "Unknown routine request: action=" + action + " data=" + data);
+    }
+
+    /**
+     * 매니페스트의 실행 항목 별칭 이름에서 버튼 번호를 읽어 냅니다.
+     * ".RunButton2" 로 들어왔으면 2를 돌려 줍니다. 별칭이 아니면 0입니다.
+     */
+    private int slotFromComponent(Intent intent) {
+        String name = aliasName(intent);
+        if (name == null || !name.startsWith(ALIAS_BUTTON_PREFIX)) {
+            return 0;
+        }
+        return RoutineBridge.parseSlotFromText(name.substring(ALIAS_BUTTON_PREFIX.length()));
+    }
+
+    private boolean isAiAlias(Intent intent) {
+        return ALIAS_AI.equals(aliasName(intent));
+    }
+
+    private String aliasName(Intent intent) {
+        ComponentName component = intent.getComponent();
+        return component == null ? null : component.getShortClassName();
     }
 
     private void openAssistant(String question) {

@@ -50,3 +50,9 @@ app/*.html
 
 # Claude Code 실행 중 생기는 임시 잠금 파일
 .claude/*.lock
+
+# hyperframes 영상 프로젝트 — 렌더 결과물과 대용량 폰트는 올리지 않는다
+videos/*/renders/
+videos/*/node_modules/
+videos/*/assets/fonts/
+videos/*/.hyperframes/frame-packets/
