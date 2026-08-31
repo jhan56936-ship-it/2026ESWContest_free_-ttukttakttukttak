@@ -38,10 +38,10 @@ import java.util.concurrent.Executors;
 /**
  * 버튼 기기(ESP32-S3)와 USB로 이어져 신호를 주고받는 백그라운드 서비스입니다.
  *
- * <h3>3.0에서 달라진 것 — 한 방향에서 두 방향으로</h3>
- * 2.0까지 이 서비스는 기기가 뱉는 평문 한 줄을 받아 읽기만 했고, 손 떨림 방지(3초 디바운스)
+ * <h3>개발 과정에서 달라진 것 — 한 방향에서 두 방향으로</h3>
+ * 초기에 이 서비스는 기기가 뱉는 평문 한 줄을 받아 읽기만 했고, 손 떨림 방지(3초 디바운스)
  * 같은 안전장치도 전부 여기 있었습니다. 폰이 바쁘면 그대로 무너지는 구조였습니다.
- * 3.0에서는 판단을 기기로 내리고, 이 서비스는 <b>주고받는 쪽</b>이 되었습니다.
+ * 지금은 판단을 기기로 내렸고, 이 서비스는 <b>주고받는 쪽</b>이 되었습니다.
  *
  * <pre>
  *   기기 → 폰   EVT_PRESS  어느 버튼을 어떻게 눌렀는지 (+ 기기가 잰 지연 us)
@@ -67,7 +67,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
 
     /**
      * 옛 평문 신호("True")를 쓰는 기기에만 적용하는 디바운스입니다.
-     * 3.0 프레임 신호는 기기 쪽 상태머신이 떨림을 걸러 내고, 여기서는 SEQ로 중복을 막기 때문에
+     * 프레임 신호는 기기 쪽 상태머신이 떨림을 걸러 내고, 여기서는 SEQ로 중복을 막기 때문에
      * 이 시간에 기대지 않습니다. (기기 쪽 값: press_fsm.h 의 repeatGuardMs)
      */
     private static final long DEBOUNCE_DELAY_MS = 3000;
@@ -110,7 +110,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     public static final String ACTION_SIMULATE_SIGNAL = "com.example.vibekey.SIMULATE_SIGNAL";
     public static final String EXTRA_SIGNAL = "signal";
 
-    /** 3.0 프레임을 그대로 만들어 넣어 보는 시험용 명령입니다. (자가진단 화면) */
+    /** 기기가 보내는 프레임을 그대로 만들어 넣어 보는 시험용 명령입니다. (자가진단 화면) */
     public static final String ACTION_SIMULATE_FRAME = "com.example.vibekey.SIMULATE_FRAME";
     public static final String EXTRA_BUTTON = "button";
     public static final String EXTRA_KIND = "kind";
@@ -208,7 +208,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     }
 
     /**
-     * 3.0 펌웨어가 보내는 것과 똑같은 프레임을 만들어 실제 수신 경로에 넣습니다.
+     * 기기가 보내는 것과 똑같은 프레임을 만들어 실제 수신 경로에 넣습니다.
      *
      * @param corrupt true 면 비트 하나를 일부러 뒤집습니다. 이때 앱이 <b>아무 일도 하지 않아야</b>
      *                맞습니다. "깨진 신호는 실행되지 않는다"를 기기 없이 눈으로 보여 주는 시험입니다.
@@ -438,7 +438,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
             startForegroundNotification();
             broadcastStatus(true, "이제 버튼을 누르시면 앱이 열려요.");
 
-            // 3.0 펌웨어라면 HELLO+STATS로 답합니다. 옛 펌웨어는 무시하고 지나갑니다.
+            // 현재 펌웨어라면 HELLO+STATS로 답합니다. 옛 평문 펌웨어는 무시하고 지나갑니다.
             requestDeviceStatus();
 
         } catch (IOException e) {
@@ -494,7 +494,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
      * 들어온 바이트를 프레임 해석기에 그대로 흘려 넣습니다.
      *
      * 해석기는 두 갈래로 나눠 돌려 줍니다.
-     *   onFrame      — CRC까지 통과한 온전한 프레임 (3.0 펌웨어)
+     *   onFrame      — CRC까지 통과한 온전한 프레임 (현재 펌웨어)
      *   onStrayBytes — 프레임이 아니었던 바이트 (잡음, 또는 옛 펌웨어의 평문)
      * 덕분에 새 펌웨어와 옛 펌웨어를 한 경로에서 함께 받을 수 있습니다.
      */
@@ -556,7 +556,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
      *  1. <b>먼저 ACK</b> — 기기의 재전송을 곧바로 멈춥니다. 앱을 여는 데 몇백 ms가 걸릴 수
      *     있는데 그동안 기다리게 하면 기기가 "못 받았다"고 오해해 같은 신호를 또 보냅니다.
      *  2. <b>같은 SEQ면 실행하지 않음</b> — ACK가 도중에 유실돼 기기가 다시 보낸 경우입니다.
-     *     같은 누름이므로 앱을 두 번 열면 안 됩니다. (2.0의 3초 디바운스를 대신하는 장치)
+     *     같은 누름이므로 앱을 두 번 열면 안 됩니다. (초기의 3초 디바운스를 대신하는 장치)
      */
     private void handlePressFrame(FrameCodec.Frame frame) {
         sendFrame(0, FrameCodec.T_ACK, new byte[]{(byte) frame.seq});
@@ -625,7 +625,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     // ------------------------------------------------------------------ 옛 평문 신호
 
     /**
-     * 프레임이 아니었던 바이트입니다. 2.0 이하 펌웨어를 올린 기기는 여기로 들어옵니다.
+     * 프레임이 아니었던 바이트입니다. 옛 평문 펌웨어를 올린 기기는 여기로 들어옵니다.
      * 이 경로에는 CRC도 SEQ도 없으므로, 예전처럼 3초 디바운스로만 떨림을 막습니다.
      */
     private void handleLegacyBytes(byte[] bytes) {
