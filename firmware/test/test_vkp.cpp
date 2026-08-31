@@ -17,6 +17,7 @@
 #include "../vibekey_firmware/press_buffer.h"
 #include "../vibekey_firmware/slot_store.h"
 #include "../vibekey_firmware/pocket_guard.h"
+#include "../vibekey_firmware/power_policy.h"
 
 using namespace vkp;
 
@@ -913,6 +914,103 @@ static void test_guard_ignores_unknown_button_numbers() {
     check(g.judge(1, 1300) == vkguard::ALLOW, "없는 버튼 번호는 조용히 무시한다");
 }
 
+
+// ---------------------------------------------------------------- 절전 규칙
+
+/*
+ * 이 기기는 폰에서 전원을 얻는다. 하루 종일 꽂아 두는 물건이라 아무 일도 안 하는
+ * 동안 폰 배터리를 먹으면 안 된다. 그런데 잘못 자면 두 가지 사고가 난다.
+ *
+ *   · 폰이 듣고 있는데 자면  → 들어오는 바이트가 그냥 사라진다
+ *   · 워치독보다 길게 자면   → 멀쩡한 기기가 "멈췄다"고 판정돼 재시작한다
+ *
+ * 두 번째가 특히 고약하다. 상수 하나만 잘못 고쳐도 기기가 몇 초마다 재시작하는데,
+ * 겉으로는 "가끔 안 눌린다"로만 보인다. 그래서 규칙이 스스로 상한을 강제하는지 본다.
+ */
+
+static void test_power_never_sleeps_while_phone_listens() {
+    vkpower::PolicyConfig cfg;
+    vkpower::Decision d = vkpower::decide(cfg, /*linkUp=*/true, true, false, 60000, 0);
+    check(!d.sleep, "폰이 듣고 있으면 자지 않는다");
+    check(d.reason == vkpower::Decision::BUSY_LINK, "안 자는 이유를 남긴다");
+}
+
+static void test_power_never_sleeps_with_unsent_presses() {
+    vkpower::PolicyConfig cfg;
+    vkpower::Decision d = vkpower::decide(cfg, false, /*bufferEmpty=*/false, false, 60000, 0);
+    check(!d.sleep, "전하지 못한 누름이 남아 있으면 자지 않는다");
+    check(d.reason == vkpower::Decision::BUSY_BUFFER, "이유가 버퍼임을 남긴다");
+}
+
+static void test_power_never_sleeps_while_a_button_is_held() {
+    // 눌린 채로 자면 레벨 깨움이 즉시 걸려, 자는 게 아니라 깨기를 반복한다.
+    vkpower::PolicyConfig cfg;
+    vkpower::Decision d = vkpower::decide(cfg, false, true, /*anyButtonDown=*/true, 60000, 0);
+    check(!d.sleep, "버튼이 눌린 채면 자지 않는다");
+    check(d.reason == vkpower::Decision::BUSY_BUTTON, "이유가 버튼임을 남긴다");
+}
+
+static void test_power_waits_until_quiet_enough() {
+    vkpower::PolicyConfig cfg;
+    check(!vkpower::decide(cfg, false, true, false, cfg.idleMs - 1, 0).sleep,
+          "조용해진 지 얼마 안 됐으면 아직 자지 않는다");
+    check(vkpower::decide(cfg, false, true, false, cfg.idleMs, 0).sleep,
+          "충분히 조용해지면 잔다");
+}
+
+static void test_power_sleeps_longer_the_longer_it_stays_quiet() {
+    // 밤새 안 쓰는 동안에도 0.5초마다 깨면 그 깨어남 자체가 전력이다.
+    vkpower::PolicyConfig cfg;
+    uint32_t s0 = vkpower::decide(cfg, false, true, false, 60000, 0).sliceUs;
+    uint32_t s1 = vkpower::decide(cfg, false, true, false, 60000, 1).sliceUs;
+    uint32_t s2 = vkpower::decide(cfg, false, true, false, 60000, 2).sliceUs;
+    uint32_t s9 = vkpower::decide(cfg, false, true, false, 60000, 9).sliceUs;
+
+    check(s0 == 500000, "처음엔 0.5초 잔다");
+    check(s1 == 1000000, "다음엔 1초");
+    check(s2 == 2000000, "그다음엔 2초");
+    check(s9 == s2, "상한에 닿으면 더 늘지 않는다");
+}
+
+static void test_power_slice_never_outlasts_the_watchdog() {
+    // 이 검사가 이 파일에서 가장 중요하다. 누가 상한을 크게 고쳐도
+    // 규칙이 워치독의 절반으로 잘라야 한다 — 안 그러면 기기가 무한 재시작한다.
+    vkpower::PolicyConfig cfg;
+    cfg.firstSliceUs = 30000000;      // 30초 — 일부러 말이 안 되는 값
+    cfg.maxSliceUs   = 30000000;
+    cfg.wdtTimeoutMs = 5000;
+
+    vkpower::Decision d = vkpower::decide(cfg, false, true, false, 60000, 5);
+    check(d.sleep, "그래도 자기는 잔다");
+    check(d.sliceUs == 2500000, "워치독 5초의 절반인 2.5초로 잘린다");
+    check(d.sliceUs * 1000ull < (uint64_t)cfg.wdtTimeoutMs * 1000000ull,
+          "어떤 설정에서도 슬라이스가 워치독을 넘지 않는다");
+
+    // 워치독을 더 짧게 잡아도 같은 규칙이 적용돼야 한다.
+    cfg.wdtTimeoutMs = 1000;
+    check(vkpower::decide(cfg, false, true, false, 60000, 5).sliceUs == 500000,
+          "워치독 1초면 0.5초로 잘린다");
+}
+
+static void test_power_clamp_handles_degenerate_config() {
+    check(vkpower::clampSlice(1000000, 0) == 0, "워치독이 0이면 자지 않는 값으로 만든다");
+    check(vkpower::clampSlice(100, 5000) == 100, "상한보다 짧으면 그대로 둔다");
+}
+
+static void test_power_duty_is_a_measured_ratio_not_a_guess() {
+    // 전류를 추정하지 않는다. 잰 것은 "잠들어 있던 시간"의 비율뿐이다.
+    check(vkpower::dutyPermille(0, 1000000) == 0, "한 번도 안 잤으면 0");
+    check(vkpower::dutyPermille(500000, 1000000) == 500, "절반을 잤으면 500‰");
+    check(vkpower::dutyPermille(1000000, 1000000) == 1000, "내내 잤으면 1000‰");
+    check(vkpower::dutyPermille(0, 0) == 0, "켜진 시간이 0이어도 터지지 않는다");
+    check(vkpower::dutyPermille(2000000, 1000000) == 1000, "1000‰ 를 넘지 않는다");
+
+    // 오래 켜져 있어도(49일 넘게) 자릿수가 넘치지 않아야 한다.
+    uint64_t sevenDaysUs = 7ull * 24 * 3600 * 1000000ull;
+    check(vkpower::dutyPermille(sevenDaysUs / 2, sevenDaysUs) == 500,
+          "일주일치 시간에도 비율이 정확하다");
+}
+
 int main() {
     std::printf("바이브키 펌웨어 단위 테스트\n");
     std::printf("---------------------------------------------\n");
@@ -958,6 +1056,15 @@ int main() {
     test_guard_counts_each_reason_separately();
     test_guard_survives_millis_wraparound();
     test_guard_ignores_unknown_button_numbers();
+
+    test_power_never_sleeps_while_phone_listens();
+    test_power_never_sleeps_with_unsent_presses();
+    test_power_never_sleeps_while_a_button_is_held();
+    test_power_waits_until_quiet_enough();
+    test_power_sleeps_longer_the_longer_it_stays_quiet();
+    test_power_slice_never_outlasts_the_watchdog();
+    test_power_clamp_handles_degenerate_config();
+    test_power_duty_is_a_measured_ratio_not_a_guess();
 
     std::printf("---------------------------------------------\n");
     std::printf("통과 %d개 / 실패 %d개\n", g_pass, g_fail);

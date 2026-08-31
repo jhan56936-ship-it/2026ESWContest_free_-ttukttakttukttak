@@ -14,6 +14,7 @@ import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbDeviceConnection;
 import android.hardware.usb.UsbManager;
 import android.os.Build;
+import android.text.TextUtils;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -137,6 +138,9 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
 
     /** 기기가 주머니 오작동으로 보고 걸러 낸 집계 (자가진단 화면에 보여 줍니다) */
     private static String deviceGuard = "";
+
+    /** 기기가 잰 절전 실측치 (잠들어 있던 시간의 비율) */
+    private static String devicePower = "";
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
         @Override
@@ -567,7 +571,15 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                 deviceGuard = String.format(Locale.KOREA,
                         "주머니 오작동으로 걸러 낸 것 %d회 (동시 눌림 %d · 오래 눌림 %d · 연달아 %d)",
                         frame.u16(0), frame.u16(2), frame.u16(4), frame.u16(6));
-                SerialLog.add(this, "STATS2", deviceGuard);
+                if (frame.len() >= 12) {
+                    // 기기가 잰 절전 실측치입니다. 전류가 아니라 "잠들어 있던 시간"의 비율이라,
+                    // 전류계 없이도 절전이 실제로 돌고 있는지 확인할 수 있습니다.
+                    devicePower = String.format(Locale.KOREA,
+                            "켜져 있는 동안 %.1f%% 를 잠들어 보냈어요 (절전 %d회)",
+                            frame.u16(8) / 10.0, frame.u16(10));
+                }
+                SerialLog.add(this, "STATS2", deviceGuard
+                        + (TextUtils.isEmpty(devicePower) ? "" : " · " + devicePower));
                 break;
             case FrameCodec.T_MAP:
                 handleMapFrame(frame);
@@ -948,6 +960,11 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     /** 기기가 주머니 오작동으로 걸러 낸 집계. 아직 못 받았으면 빈 글자. */
     public static String guardSummary() {
         return deviceGuard;
+    }
+
+    /** 기기가 잰 절전 실측치. 아직 못 받았으면 빈 글자. */
+    public static String powerSummary() {
+        return devicePower;
     }
 
     public static String roundTripSummary() {

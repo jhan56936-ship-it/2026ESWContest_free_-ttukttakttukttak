@@ -143,7 +143,7 @@ adb shell am start -a android.intent.action.VIEW -d "vibekey://run/2"
 | 폰 → 기기 | `ACK` | "받았다" — 없으면 기기가 같은 SEQ로 세 번까지 다시 보냄 |
 | 폰 → 기기 | `PING` | 상태 물어보기 (자가진단 화면) |
 | 기기 → 폰 | `MAP` | 기기 플래시에 적어 둔 버튼 매핑 (조각 단위) |
-| 기기 → 폰 | `STATS2` | 주머니 오작동으로 걸러 낸 횟수 (동시 눌림 · 오래 눌림 · 연달아) |
+| 기기 → 폰 | `STATS2` | 주머니 오작동으로 걸러 낸 횟수 + 절전 실측(잠들어 있던 시간 비율) |
 | 폰 → 기기 | `SET_MAP` / `GET_MAP` | 버튼 매핑을 기기에 적어 두기 / 되찾아 오기 |
 
 네 가지가 개발 초기의 평문 방식에는 없던 것입니다.
@@ -155,6 +155,9 @@ adb shell am start -a android.intent.action.VIEW -d "vibekey://run/2"
   케이블만 꽂으면 어르신이 정해 두신 단추가 그대로 돌아옵니다. 값이 16바이트 payload 한도를 넘으므로
   조각으로 나눠 보내고, 조각이 하나라도 어긋나면 통째로 버립니다.
   (`slot_store.h` ↔ `SlotMapCodec.java` — 절반만 저장된 매핑은 "눌러도 엉뚱한 앱이 열리는" 고장이 됩니다)
+- **하루 종일 꽂아 둬도 됩니다** — 폰이 듣고 있지 않으면 기기가 잠듭니다. 조용한 시간이 길어질수록
+  더 오래 자고(0.5초 → 1초 → 2초), 폰이 듣고 있는 동안에도 할 일이 없으면 CPU 를 80MHz 로 내립니다.
+  자는 시간이 워치독을 넘으면 멀쩡한 기기가 재시작하므로, 규칙이 스스로 상한을 강제합니다. (`power_policy.h`)
 
 ### 기기에서 일어난 일을 폰의 진동으로
 
@@ -202,13 +205,13 @@ adb shell am start -a android.intent.action.VIEW -d "vibekey://run/2"
 ```bash
 ./gradlew :app:testDebugUnitTest          # 앱 순수 로직 100개 (기기 불필요, 1초)
 ./gradlew :app:connectedDebugAndroidTest  # 기기/에뮬레이터 7개
-cd firmware/test && ./run_tests.sh        # 펌웨어 133개 (PC에서, 기기 불필요 · 약 3초)
+cd firmware/test && ./run_tests.sh        # 펌웨어 157개 (PC에서, 기기 불필요 · 약 3초)
 ```
 
-펌웨어는 **ESP32 코어 3.3.11로 실제 빌드까지 확인**했습니다 (경고 0개, 플래시 296,693 B = 8% · RAM 23,576 B = 7%).
+펌웨어는 **ESP32 코어 3.3.11로 실제 빌드까지 확인**했습니다 (경고 0개, 플래시 297,013 B = 8% · RAM 23,608 B = 7%).
 빌드 명령과 두 USB 설정별 사용량은 [`firmware/README.md` 7-0](firmware/README.md).
 
-검증된 결과: **앱 단위 100개 + 펌웨어 133개 = 233개 전부 통과** (기기 없이 확인).
+검증된 결과: **앱 단위 100개 + 펌웨어 157개 = 257개 전부 통과** (기기 없이 확인).
 계측 테스트 7개는 실제 기기·에뮬레이터에서 돌려야 합니다.
 
 펌웨어 쪽 검사는 `vkp_frame.h`(프레임·CRC·재동기화)와 `press_fsm.h`(디바운스·길게 누름·떨림 가드)가
@@ -227,12 +230,12 @@ Arduino 헤더를 쓰지 않는 순수 C++ 이라서 가능합니다. 기기가 
 | `FunctionCatalogTest` (8) | 첫 실행에서 고르는 "자주 하는 일" 목록. 아이디가 겹치거나 후보 앱이 비면 그 칸은 눌러도 아무 앱이 안 잡힙니다. |
 | `PrefsKeyTest` (4) | 저장 키의 하위 호환. 깨지면 업데이트 시 사용자 설정이 전부 사라집니다. |
 | `VibeKeyInstrumentedTest` (7) | 실제 저장/읽기, 예전 버전 데이터 호환, 신호 기록, 루틴 바로가기 등록, 기본값(음성·진동 켜짐). |
-| `test_vkp.cpp` (133, 펌웨어) | 같은 프레임 규격을 C++ 쪽에서. CRC 검증값, 비트 전수 뒤집기, 무작위 손상 400만 건(1~3비트 200만 + 4~10비트 200만), 잡음 뒤 재동기화, 디바운스·길게 누름·떨림 가드 상태머신, 오프라인 버퍼, **주머니 오작동 차단**(동시 눌림·오래 눌림·연달아 눌림), **매핑 조각내기/모으기**. |
+| `test_vkp.cpp` (157, 펌웨어) | 같은 프레임 규격을 C++ 쪽에서. CRC 검증값, 비트 전수 뒤집기, 무작위 손상 400만 건(1~3비트 200만 + 4~10비트 200만), 잡음 뒤 재동기화, 디바운스·길게 누름·떨림 가드 상태머신, 오프라인 버퍼, **주머니 오작동 차단**(동시 눌림·오래 눌림·연달아 눌림), **매핑 조각내기/모으기**, **절전 규칙**(슬라이스가 워치독을 절대 넘지 않는지). |
 
 테스트를 쉽게 하려고 순수 로직을 `FrameCodec` · `SignalParser` · `KeywordMatcher` · `SlotPlanner` ·
 `SlotMapCodec` · `KoreanParticle` · `FunctionCatalog` ·
 `RoutineBridge.parseSlotFromText` (앱)와 `vkp_frame.h` · `press_fsm.h` · `press_buffer.h` ·
-`slot_store.h` · `pocket_guard.h` (펌웨어)로 분리했고,
+`slot_store.h` · `pocket_guard.h` · `power_policy.h` (펌웨어)로 분리했고,
 서비스·화면·태스크는 이 조각들을 쓰도록 만들었습니다.
 
 ### 5-3. 잡음을 얼마나 견디는가 (숫자)

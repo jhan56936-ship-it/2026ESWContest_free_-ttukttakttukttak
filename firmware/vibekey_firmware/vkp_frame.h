@@ -67,7 +67,7 @@ static const uint8_t T_EVT_PRESS = 0x01;  // btn, kind, latencyLo, latencyHi
 static const uint8_t T_HELLO     = 0x02;  // proto, fwMajor, fwMinor, buttons, caps
 static const uint8_t T_STATS     = 0x03;  // sent, retx, ackTimeout, crcErr, uptimeSec (각 2바이트 LE)
 static const uint8_t T_MAP       = 0x04;  // slot, index, count, data[..] — 기기에 저장된 버튼 매핑
-static const uint8_t T_STATS2    = 0x05;  // 주머니 오작동 차단 집계 (blocked, multi, stuck, burst · 각 2바이트 LE)
+static const uint8_t T_STATS2    = 0x05;  // 주머니 차단 + 절전 실측 (blocked, multi, stuck, burst, dutyPermille, sleeps · 각 2바이트 LE)
 
 // 폰 → 기기
 static const uint8_t T_ACK       = 0x10;  // ackSeq

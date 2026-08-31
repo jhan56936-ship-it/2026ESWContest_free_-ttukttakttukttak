@@ -35,6 +35,13 @@
         "vibekey-ad"
       ],
       "updated_at": "2026-08-31T07:43:56.054Z"
+    },
+    "style_preset.product-launch-video": {
+      "value": "creative-mode",
+      "confirmed_in": [
+        "vibekey-ad"
+      ],
+      "updated_at": "2026-08-31T07:49:58.062Z"
     }
   },
   "sightings": {}

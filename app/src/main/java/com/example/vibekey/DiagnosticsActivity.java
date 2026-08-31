@@ -197,6 +197,7 @@ public class DiagnosticsActivity extends BaseActivity {
         checks.add(checkAiPlanFilter());
         checks.add(checkDeviceSlotStore());
         checks.add(checkPocketGuard());
+        checks.add(checkPowerSaving());
         // 기기에 "상태를 알려 달라"고 먼저 물어봅니다. 답은 아래 항목들에서 확인합니다.
         UsbSerialService.requestDeviceStatus();
         checks.add(checkDeviceProtocol());
@@ -433,6 +434,18 @@ public class DiagnosticsActivity extends BaseActivity {
         return new Check("기기에 설정 저장", saved,
                 saved ? "정해 두신 버튼을 기기에도 적어 둡니다. 폰을 바꿔도 그대로 따라옵니다."
                         : "아직 정해 둔 버튼이 없어 기기에 적을 것이 없어요.");
+    }
+
+
+    private Check checkPowerSaving() {
+        // 기기가 스스로 잰 값입니다. 전류가 아니라 "잠들어 있던 시간"의 비율이라,
+        // 전류계 없이도 절전이 실제로 도는지 확인할 수 있습니다.
+        String summary = UsbSerialService.powerSummary();
+        if (TextUtils.isEmpty(summary)) {
+            return new Check("절전", true,
+                    "기기를 꽂고 앱을 잠시 닫아 두면, 얼마나 잠들어 있었는지 여기에 나옵니다.");
+        }
+        return new Check("절전", true, summary);
     }
 
     // ------------------------------------------------------------------ 결과 그리기

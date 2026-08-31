@@ -51,6 +51,7 @@
 #include <esp_system.h>
 #include <esp_heap_caps.h>
 #include <esp_sleep.h>
+#include <esp_pm.h>
 #include <driver/gpio.h>
 #include <Preferences.h>
 
@@ -59,6 +60,7 @@
 #include "press_buffer.h"
 #include "slot_store.h"
 #include "pocket_guard.h"
+#include "power_policy.h"
 
 using namespace vkp;
 
@@ -105,8 +107,14 @@ static const uint32_t WDT_TIMEOUT_MS = 5000;
 // 한 번에 오래 자지 않고 짧게 끊어 자는 이유는 워치독 때문입니다. 자는 동안에는
 // 어느 태스크도 워치독을 먹이지 못하므로, 슬라이스가 워치독 시간을 넘으면
 // 멀쩡한 기기가 재시작해 버립니다.
-static const uint32_t SLEEP_IDLE_MS  = 3000;    // 이만큼 조용하면 잠들기 시작
-static const uint32_t SLEEP_SLICE_US = 500000;  // 한 번에 자는 시간 (0.5초)
+// "언제, 얼마나 자는가"의 판단은 power_policy.h 로 옮겼다. PC에서 시험할 수 있고,
+// 슬라이스가 워치독 시간을 넘지 못하도록 규칙이 스스로 강제한다.
+static vkpower::PolicyConfig powerCfg;
+
+/** 깨어나서 아무 일 없이 다시 잠들기를 반복한 횟수. 이 값이 클수록 더 오래 잔다. */
+static uint16_t consecutiveSleeps = 0;
+/** 지금까지 실제로 잠들어 있던 시간의 합. 전류계 없이 절전을 확인하는 근거다. */
+static uint64_t sleptUsTotal = 0;
 
 // ---------------------------------------------------------------- 핀맵
 //  XIAO ESP32-S3 (D 표기 → 실제 GPIO)
@@ -442,11 +450,19 @@ static void sendGuardStats() {
     uint16_t multi = pocket.blockedMulti();
     uint16_t stuck = pocket.blockedStuck();
     uint16_t burst = (uint16_t)(pocket.blockedBurst() + pocket.blockedCooldown());
-    uint8_t p[8] = {
-        (uint8_t)(total & 0xFF), (uint8_t)(total >> 8),
-        (uint8_t)(multi & 0xFF), (uint8_t)(multi >> 8),
-        (uint8_t)(stuck & 0xFF), (uint8_t)(stuck >> 8),
-        (uint8_t)(burst & 0xFF), (uint8_t)(burst >> 8)
+
+    // 절전 실측치. 전류를 추정하지 않는다 — 잰 것은 "잠들어 있던 시간"뿐이다.
+    uint64_t upUs   = (uint64_t)esp_timer_get_time();
+    uint16_t duty   = vkpower::dutyPermille(sleptUsTotal, upUs);
+    uint16_t sleeps = (uint16_t)(stats.sleeps > 0xFFFF ? 0xFFFF : stats.sleeps);
+
+    uint8_t p[12] = {
+        (uint8_t)(total & 0xFF),  (uint8_t)(total >> 8),
+        (uint8_t)(multi & 0xFF),  (uint8_t)(multi >> 8),
+        (uint8_t)(stuck & 0xFF),  (uint8_t)(stuck >> 8),
+        (uint8_t)(burst & 0xFF),  (uint8_t)(burst >> 8),
+        (uint8_t)(duty & 0xFF),   (uint8_t)(duty >> 8),
+        (uint8_t)(sleeps & 0xFF), (uint8_t)(sleeps >> 8)
     };
     writeFrame(0, T_STATS2, p, sizeof(p));
 }
@@ -466,39 +482,48 @@ static bool anyButtonDown() {
  * @return 실제로 잠들었으면 true
  */
 static bool maybeLightSleep(bool linkUp, uint32_t lastActivityMs) {
-    if (linkUp) {
-        return false;                                   // 폰이 듣고 있습니다 — 자면 안 됩니다
-    }
-    if (!offline.empty()) {
-        return false;                                   // 전할 것이 남아 있습니다
-    }
-    if ((uint32_t)(millis() - lastActivityMs) < SLEEP_IDLE_MS) {
-        return false;                                   // 아직 조용해진 지 얼마 안 됐습니다
-    }
-    if (anyButtonDown()) {
-        return false;                                   // 눌린 채면 레벨 깨움이 즉시 걸립니다
+    vkpower::Decision d = vkpower::decide(
+            powerCfg,
+            linkUp,
+            offline.empty(),
+            anyButtonDown(),
+            (uint32_t)(millis() - lastActivityMs),
+            consecutiveSleeps);
+
+    if (!d.sleep) {
+        consecutiveSleeps = 0;      // 뭔가 하고 있으니 다음엔 다시 짧게 잔다
+        return false;
     }
 
-    // 버튼이 눌리는 순간(LOW) 깨어납니다.
+    // 버튼이 눌리는 순간(LOW) 깨어난다. 사람이 기기를 다시 쓰는 순간은 이걸로 잡히므로,
+    // 슬라이스가 길어져도 사용자가 기다리는 일은 생기지 않는다.
     for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
         gpio_wakeup_enable((gpio_num_t)BUTTON_PINS[i], GPIO_INTR_LOW_LEVEL);
     }
     esp_sleep_enable_gpio_wakeup();
-    esp_sleep_enable_timer_wakeup(SLEEP_SLICE_US);
-    // USB 활동으로 깨우는 기능은 이 칩·코어 조합에서 쓸 수 없습니다.
+    esp_sleep_enable_timer_wakeup(d.sliceUs);
+    // USB 활동으로 깨우는 기능은 이 칩·코어 조합에서 쓸 수 없다.
     // (esp_sleep_enable_usb_wakeup 은 고속 USB-OTG 전용이고, ESP32-S3 의 CDC 는
-    //  USB Serial/JTAG 라 해당하지 않습니다.)
-    // 대신 위의 타이머 깨움이 그 역할을 합니다 — 0.5초마다 깨어나 DTR 을 다시 보므로
-    // 앱이 다시 붙으면 최대 0.5초 안에 알아차립니다.
+    //  USB Serial/JTAG 라 해당하지 않는다.)
+    // 그래서 타이머 깨움이 그 역할을 한다 — 깨어나 DTR 을 다시 본다.
 
+    int64_t before = esp_timer_get_time();
     esp_light_sleep_start();
+    int64_t slept = esp_timer_get_time() - before;
+    if (slept > 0) {
+        sleptUsTotal += (uint64_t)slept;
+    }
 
-    // 깨어난 뒤에는 깨움 설정을 되돌립니다. 남겨 두면 다음 판단에 영향을 줍니다.
+    // 깨움 설정을 되돌린다. 남겨 두면 다음 판단에 영향을 준다.
     for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
         gpio_wakeup_disable((gpio_num_t)BUTTON_PINS[i]);
     }
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+
     stats.sleeps++;
+    if (consecutiveSleeps < 0xFFFF) {
+        consecutiveSleeps++;        // 계속 조용하면 다음엔 더 오래 잔다
+    }
     return true;
 }
 
@@ -677,6 +702,22 @@ void setup() {
     wdtCfg.trigger_panic  = true;       // 물리면 패닉 → 자동 재시작
     if (esp_task_wdt_init(&wdtCfg) == ESP_ERR_INVALID_STATE) {
         esp_task_wdt_reconfigure(&wdtCfg);
+    }
+
+    // 폰이 듣고 있는 동안에는 잘 수 없다(자면 들어오는 바이트가 사라진다).
+    // 대신 할 일이 없을 때 CPU 주파수를 240MHz 에서 80MHz 로 스스로 내리게 한다.
+    // 이건 자는 게 아니라 느려지는 것이라, USB CDC 는 그대로 살아 있다.
+    //
+    // 자동 light sleep 은 켜지 않는다 — 그걸 켜면 코어가 임의의 시점에 잠들어
+    // USB 수신이 깨진다. 우리가 자는 시점은 power_policy.h 가 직접 고른다.
+    {
+        esp_pm_config_t pm = {};
+        pm.max_freq_mhz = 240;
+        pm.min_freq_mhz = 80;
+        pm.light_sleep_enable = false;
+        // 코어가 전력 관리 없이 빌드된 경우 ESP_ERR_NOT_SUPPORTED 가 온다.
+        // 그때는 그냥 240MHz 로 도는 것이고, 기능에는 영향이 없다.
+        esp_pm_configure(&pm);
     }
 
     // 플래시에 적어 둔 버튼 매핑을 먼저 읽어 둡니다. 폰이 물어보면 바로 답할 수 있게.
