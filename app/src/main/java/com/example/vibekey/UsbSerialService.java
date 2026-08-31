@@ -100,6 +100,8 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     private long lastAiLaunchTime = 0;
 
     public static final String ACTION_STATUS_CHANGED = "com.example.vibekey.STATUS_CHANGED";
+    /** 기기에 저장해 둔 매핑을 되찾아 왔을 때 알립니다. */
+    public static final String ACTION_MAP_RESTORED = "com.example.vibekey.MAP_RESTORED";
     public static final String EXTRA_IS_CONNECTED = "is_connected";
     public static final String EXTRA_DESCRIPTION = "description";
 
@@ -121,6 +123,20 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
 
     private boolean isConnected = false;
     private boolean isForegroundStarted = false;
+
+
+    // ---------------------------------------------------------------- 버튼 매핑 동기화
+    //
+    // "1번 버튼 = 카카오톡" 을 기기 플래시에도 같이 적어 둡니다.
+    // 폰을 바꾸거나 앱을 다시 깔아도 어르신이 설정을 다시 잡지 않으셔도 됩니다.
+
+    /** 기기가 조각내어 보내 준 매핑을 모으는 곳 */
+    private final SlotMapCodec.Assembler mapAssembler = new SlotMapCodec.Assembler();
+    /** 이 기기가 매핑을 저장할 수 있는지 (HELLO 의 caps 비트) */
+    private boolean deviceCanStoreMap;
+
+    /** 기기가 주머니 오작동으로 보고 걸러 낸 집계 (자가진단 화면에 보여 줍니다) */
+    private static String deviceGuard = "";
 
     private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
         @Override
@@ -530,6 +546,7 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                 }
                 helloAtMs = System.currentTimeMillis();
                 SerialLog.add(this, "HELLO", deviceInfo);
+                syncSlotMapWithDevice(frame.u8(4));
                 break;
             case FrameCodec.T_STATS:
                 deviceStats = String.format(Locale.KOREA,
@@ -543,6 +560,17 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
                             frame.u16(10), frame.u16(12), drops, drops == 0 ? " ✅" : " ⚠️");
                 }
                 SerialLog.add(this, "STATS", deviceStats);
+                break;
+            case FrameCodec.T_STATS2:
+                // 기기가 "주머니에서 눌린 것으로 보고 걸러 냈다"고 알려 준 숫자입니다.
+                // 사용자가 "왜 안 눌렸지?" 하고 물을 때 답할 근거가 됩니다.
+                deviceGuard = String.format(Locale.KOREA,
+                        "주머니 오작동으로 걸러 낸 것 %d회 (동시 눌림 %d · 오래 눌림 %d · 연달아 %d)",
+                        frame.u16(0), frame.u16(2), frame.u16(4), frame.u16(6));
+                SerialLog.add(this, "STATS2", deviceGuard);
+                break;
+            case FrameCodec.T_MAP:
+                handleMapFrame(frame);
                 break;
             default:
                 SerialLog.add(this, frame.toString(), "모르는 종류의 프레임 (무시함)");
@@ -728,6 +756,117 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
         });
     }
 
+    // ------------------------------------------------------------------ 버튼 매핑 동기화
+
+    /**
+     * 기기가 자기소개(HELLO)를 했을 때, 버튼 매핑을 어느 쪽으로 맞출지 정합니다.
+     *
+     * <p>규칙은 하나뿐입니다 — <b>폰에 정해 둔 것이 있으면 폰이 옳고, 없으면 기기가 옳다.</b>
+     * <ul>
+     *   <li>폰에 아무것도 없음 (새 폰 · 앱을 다시 깖) → 기기에게 물어봐 되찾아 옵니다.</li>
+     *   <li>폰에 정해 둔 것이 있음 → 기기에 같은 값을 적어 둡니다. 다음 폰을 위한 준비입니다.</li>
+     * </ul>
+     * 기기가 덮어쓰는 일은 없습니다. 어르신이 방금 바꾼 설정이 케이블을 꽂자마자
+     * 옛날 것으로 되돌아가면, 왜 그런지 알 방법이 없기 때문입니다.
+     *
+     * @param caps HELLO 의 5번째 바이트 (기능 비트)
+     */
+    private void syncSlotMapWithDevice(int caps) {
+        deviceCanStoreMap = (caps & FrameCodec.CAP_SLOT_STORE) != 0;
+        if (!deviceCanStoreMap) {
+            return;     // 옛 펌웨어입니다. 예전처럼 폰만 들고 있습니다.
+        }
+        mapAssembler.resetAll();
+
+        if (Prefs.with(this).hasAnyExplicitSlot()) {
+            SerialLog.add(this, "매핑 보내기", "폰에 정해 둔 설정을 기기에도 적어 둡니다.");
+            pushSlotMapToDevice();
+        } else {
+            SerialLog.add(this, "매핑 물어보기", "폰에 설정이 없어 기기에 저장된 것을 찾아봅니다.");
+            sendFrame(0, FrameCodec.T_GET_MAP, null);
+        }
+    }
+
+    /**
+     * 폰이 들고 있는 버튼 매핑을 기기 플래시에 적습니다.
+     *
+     * <p>값이 16바이트 한도를 넘으므로 조각으로 나눠 보냅니다. 기기는 다 모이면
+     * 저장한 값을 그대로 되읽어 보내 주므로, 그 회신이 곧 "잘 저장됐다"는 확인입니다.
+     */
+    private void pushSlotMapToDevice() {
+        Prefs prefs = Prefs.with(this);
+        for (int slot = 1; slot <= Prefs.SLOT_COUNT; slot++) {
+            // 앱 실행이 아닌 빠른 동작(전화·문자·길찾기)은 패키지명이 없어 기기에 담지 않습니다.
+            boolean isApp = "APP".equals(prefs.getSlotActionType(slot));
+            byte[] value = isApp
+                    ? SlotMapCodec.encodeValue(prefs.getSlotPackage(slot), prefs.getSlotLabel(slot))
+                    : new byte[0];
+            if (value == null) {
+                continue;   // 담을 수 없을 만큼 긴 패키지명 (실제로는 없습니다)
+            }
+            for (byte[] chunk : SlotMapCodec.split(slot, value)) {
+                sendFrame(0, FrameCodec.T_SET_MAP, chunk);
+            }
+        }
+    }
+
+    /**
+     * 기기가 보내 준 매핑 조각을 모읍니다.
+     *
+     * <p>다 모였을 때에도 <b>폰에 이미 정해 둔 값이 있으면 덮어쓰지 않습니다.</b>
+     * 되찾아 오는 것은 "폰이 비어 있을 때"뿐입니다.
+     */
+    private void handleMapFrame(FrameCodec.Frame frame) {
+        int slot = frame.u8(0);
+        int index = frame.u8(1);
+        int total = frame.u8(2);
+        int dataLen = Math.max(0, frame.len() - SlotMapCodec.HEADER_LEN);
+        byte[] data = new byte[dataLen];
+        for (int i = 0; i < dataLen; i++) {
+            data[i] = (byte) frame.u8(SlotMapCodec.HEADER_LEN + i);
+        }
+
+        int result = mapAssembler.accept(slot, index, total, data);
+        if (result == SlotMapCodec.REJECTED) {
+            SerialLog.add(this, frame.toString(), "매핑 조각이 어긋나 버렸습니다 (" + slot + "번)");
+            return;
+        }
+        if (result != SlotMapCodec.COMPLETE) {
+            return;
+        }
+
+        byte[] value = mapAssembler.completed(slot);
+        SlotMapCodec.Entry entry = SlotMapCodec.decodeValue(value);
+        SerialLog.add(this, "매핑 받음", slot + "번 = " + SlotMapCodec.describe(value));
+
+        if (entry.isEmpty()) {
+            return;
+        }
+        Prefs prefs = Prefs.with(this);
+        if (prefs.hasAnyExplicitSlot()) {
+            return;     // 폰이 옳습니다. 되돌리지 않습니다.
+        }
+
+        prefs.setSlot(slot, entry.packageName, entry.label);
+        // 기기가 설정을 들고 있었다는 것은 이미 첫 설정을 마치셨다는 뜻입니다.
+        // 새 폰에서 같은 것을 또 여쭙지 않습니다.
+        prefs.setOnboarded(true);
+        RoutineBridge.refreshShortcuts(this);
+        sendBroadcast(new Intent(ACTION_MAP_RESTORED).setPackage(getPackageName()));
+    }
+
+    /**
+     * 매핑이 바뀌었을 때(첫 설정 · 앱 고르기 · AI 추천) 기기에도 적어 두라고 알립니다.
+     * 기기가 안 꽂혀 있으면 아무 일도 하지 않고, 다음에 꽂을 때 HELLO 에서 다시 맞춥니다.
+     */
+    public static void pushSlotMap(Context context) {
+        UsbSerialService self = instance;
+        if (self == null || !self.deviceCanStoreMap) {
+            return;
+        }
+        self.pushSlotMapToDevice();
+    }
+
     // ------------------------------------------------------------------ 기기로 보내기
 
     /**
@@ -806,6 +945,11 @@ public class UsbSerialService extends Service implements SerialInputOutputManage
     }
 
     /** 기기에 물어본 뒤 답이 돌아오기까지 걸린 시간. 아직 답이 없으면 null. */
+    /** 기기가 주머니 오작동으로 걸러 낸 집계. 아직 못 받았으면 빈 글자. */
+    public static String guardSummary() {
+        return deviceGuard;
+    }
+
     public static String roundTripSummary() {
         if (pingAtMs == 0) {
             return null;

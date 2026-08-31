@@ -43,11 +43,12 @@ public final class AppLauncher {
         boolean launched = launchPackage(context, packageName);
         if (launched) {
             Haptics.success(context);
-            String spoken = TextUtils.isEmpty(label) ? "앱을 엽니다." : label + "을(를) 엽니다.";
+            String spoken = TextUtils.isEmpty(label) ? "앱을 엽니다." : KoreanParticle.withEulReul(label) + " 엽니다.";
             SpeechManager.get(context).speakIfEnabled(context, spoken);
             RoutineBridge.notifyButtonPressed(context, slot, packageName, label, source);
         } else {
-            String message = (TextUtils.isEmpty(label) ? "그 앱" : label) + "이(가) 휴대폰에 없어요. 다시 정해 주세요.";
+            String missing = TextUtils.isEmpty(label) ? "그 앱" : label;
+            String message = missing + KoreanParticle.iGa(missing) + " 휴대폰에 없어요. 다시 정해 주세요.";
             Toast.makeText(context, message, Toast.LENGTH_LONG).show();
             SpeechManager.get(context).speakIfEnabled(context, message);
         }

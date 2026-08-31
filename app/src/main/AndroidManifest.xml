@@ -121,6 +121,13 @@
             android:exported="false"
             android:label="@string/test_title" />
 
+        <!-- 첫 실행: 자주 하는 일을 고르면 AI가 단추 1·2·3번을 정해 줍니다. -->
+        <activity
+            android:name=".OnboardingActivity"
+            android:exported="false"
+            android:label="@string/onboard_title"
+            android:launchMode="singleTop" />
+
         <!--
             삼성 루틴·자동화 앱이 부르는 "화면 없는" 실행 창구입니다.
             루틴에서 앱 바로가기로 고르거나, vibekey:// 딥링크로 부를 수 있습니다.

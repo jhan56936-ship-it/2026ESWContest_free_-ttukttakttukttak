@@ -200,7 +200,7 @@ public class AppPickerActivity extends BaseActivity {
         }
 
         String question = (byAi ? "AI가 고른 앱이에요.\n\n" : "")
-                + "'" + found.label + "'을(를) " + slot + "번 버튼에 넣을까요?";
+                + "'" + found.label + "'" + KoreanParticle.eulReul(found.label) + " " + slot + "번 버튼에 넣을까요?";
         new MaterialAlertDialogBuilder(this)
                 .setTitle("이 앱이 맞나요?")
                 .setMessage(question)
@@ -303,9 +303,10 @@ public class AppPickerActivity extends BaseActivity {
 
         Prefs.with(this).setSlotAction(slot, type, label, number, actionText);
         RoutineBridge.refreshShortcuts(this);
+        UsbSerialService.pushSlotMap(this);   // 기기 플래시에도 같은 값을 적어 둡니다
         Haptics.success(this);
 
-        String message = slot + "번 버튼에 '" + label + "'을(를) 넣었어요.";
+        String message = slot + "번 버튼에 '" + label + "'" + KoreanParticle.eulReul(label) + " 넣었어요.";
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         SpeechManager.get(this).speakIfEnabled(this, message);
         finish();
@@ -316,9 +317,10 @@ public class AppPickerActivity extends BaseActivity {
     private void select(AppItem item) {
         Prefs.with(this).setSlot(slot, item.packageName, item.label);
         RoutineBridge.refreshShortcuts(this);
+        UsbSerialService.pushSlotMap(this);   // 기기 플래시에도 같은 값을 적어 둡니다
         Haptics.success(this);
 
-        String message = slot + "번 버튼에 " + item.label + "을(를) 넣었어요.";
+        String message = slot + "번 버튼에 " + KoreanParticle.withEulReul(item.label) + " 넣었어요.";
         Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         SpeechManager.get(this).speakIfEnabled(this, message);
         finish();

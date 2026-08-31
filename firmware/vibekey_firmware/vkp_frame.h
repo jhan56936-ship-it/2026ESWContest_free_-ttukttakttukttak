@@ -66,12 +66,20 @@ static const uint8_t  PROTO_VERSION = 1;
 static const uint8_t T_EVT_PRESS = 0x01;  // btn, kind, latencyLo, latencyHi
 static const uint8_t T_HELLO     = 0x02;  // proto, fwMajor, fwMinor, buttons, caps
 static const uint8_t T_STATS     = 0x03;  // sent, retx, ackTimeout, crcErr, uptimeSec (각 2바이트 LE)
+static const uint8_t T_MAP       = 0x04;  // slot, index, count, data[..] — 기기에 저장된 버튼 매핑
+static const uint8_t T_STATS2    = 0x05;  // 주머니 오작동 차단 집계 (blocked, multi, stuck, burst · 각 2바이트 LE)
 
 // 폰 → 기기
 static const uint8_t T_ACK       = 0x10;  // ackSeq
 static const uint8_t T_PING      = 0x12;  // (빈 payload) → 기기가 HELLO+STATS로 답함
 // 0x11 은 예전에 진동 패턴 지시(FEEDBACK)로 쓰던 번호입니다. 기기에 출력 장치가
 // 없어 지금은 쓰지 않지만, 나중에 표시 장치를 붙일 때를 위해 비워 둡니다.
+
+static const uint8_t T_SET_MAP   = 0x13;  // slot, index, count, data[..] — 이 버튼 매핑을 저장해 둬
+static const uint8_t T_GET_MAP   = 0x14;  // (빈 payload) → 기기가 저장해 둔 매핑을 T_MAP 으로 답함
+
+// caps 비트 (HELLO 의 5번째 바이트)
+static const uint8_t CAP_SLOT_STORE = 0x01;  // 버튼 매핑을 기기에 저장할 수 있음
 
 // 누름 종류
 static const uint8_t K_SHORT  = 0;

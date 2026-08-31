@@ -15,6 +15,8 @@
 #include "../vibekey_firmware/vkp_frame.h"
 #include "../vibekey_firmware/press_fsm.h"
 #include "../vibekey_firmware/press_buffer.h"
+#include "../vibekey_firmware/slot_store.h"
+#include "../vibekey_firmware/pocket_guard.h"
 
 using namespace vkp;
 
@@ -593,6 +595,324 @@ static void test_seq_resync_after_restart_has_no_duplicate_execution() {
           "재시작 경계에서 프레임이 깨지지 않는다");
 }
 
+
+// ---------------------------------------------------------------- 버튼 매핑 저장
+
+/*
+ * 매핑을 기기에 담아 두는 기능(slot_store.h)의 검사입니다.
+ *
+ * 여기서 가장 나쁜 결과는 "절반만 저장된 매핑"입니다. 화면을 안 보고 누르는
+ * 기기이므로, 1번 버튼에 엉뚱한 앱이 붙어 있어도 사용자는 누르기 전까지 모릅니다.
+ * 그래서 조각이 하나라도 어긋나면 통째로 버리는지를 특히 꼼꼼히 봅니다.
+ */
+
+static vkmap::Entry makeEntry(const char* text) {
+    vkmap::Entry e;
+    e.set(text, (uint8_t)std::strlen(text));
+    return e;
+}
+
+/** 조각내어 보낸 뒤 그대로 다시 모읍니다. */
+static bool roundTripMap(uint8_t slot, const char* text, vkmap::Entry& out) {
+    vkmap::Entry src = makeEntry(text);
+    vkmap::Assembler asm_;
+    uint8_t total = vkmap::chunkCount(src.len);
+    for (uint8_t i = 0; i < total; i++) {
+        uint8_t p[MAX_PAYLOAD];
+        uint8_t n = vkmap::buildChunk(slot, src, i, p);
+        if (n == 0) {
+            return false;
+        }
+        vkmap::Result r = asm_.accept(p[0], p[1], p[2],
+                                      p + vkmap::HEADER_LEN,
+                                      (uint8_t)(n - vkmap::HEADER_LEN));
+        if (i + 1 < total && r != vkmap::NEED_MORE) {
+            return false;
+        }
+        if (i + 1 == total && r != vkmap::COMPLETE) {
+            return false;
+        }
+    }
+    out = asm_.completed(slot);
+    return true;
+}
+
+static void test_map_roundtrip_long_package_name() {
+    // 한 조각(13바이트)에 안 들어가는 실제 패키지명입니다.
+    const char* value = "com.samsung.android.dialer\n전화";
+    vkmap::Entry got;
+    check(roundTripMap(1, value, got), "매핑 조각내기/모으기가 끝까지 간다");
+    check(got.len == (uint8_t)std::strlen(value), "모은 길이가 보낸 길이와 같다");
+    check(std::memcmp(got.text, value, got.len) == 0, "모은 내용이 보낸 내용과 같다");
+}
+
+static void test_map_roundtrip_short_and_empty() {
+    vkmap::Entry got;
+    check(roundTripMap(2, "a", got) && got.len == 1, "한 글자짜리도 오간다");
+
+    // 빈 값도 "이 버튼은 비었다"는 뜻이라 반드시 전달돼야 합니다.
+    vkmap::Entry empty;
+    check(vkmap::chunkCount(0) == 1, "빈 값도 조각 하나로 보낸다");
+    uint8_t p[MAX_PAYLOAD];
+    uint8_t n = vkmap::buildChunk(3, empty, 0, p);
+    check(n == vkmap::HEADER_LEN, "빈 값의 조각에는 글자가 없다");
+    vkmap::Assembler asm_;
+    check(asm_.accept(p[0], p[1], p[2], nullptr, 0) == vkmap::COMPLETE,
+          "빈 값도 한 번에 완성된다");
+    check(asm_.completed(3).empty(), "완성된 값이 비어 있다");
+}
+
+static void test_map_fills_maximum_length() {
+    char big[vkmap::MAX_VALUE + 1];
+    for (uint8_t i = 0; i < vkmap::MAX_VALUE; i++) {
+        big[i] = (char)('a' + (i % 26));
+    }
+    big[vkmap::MAX_VALUE] = '\0';
+
+    vkmap::Entry got;
+    check(roundTripMap(1, big, got), "한도(96바이트)까지 꽉 채워도 오간다");
+    check(got.len == vkmap::MAX_VALUE, "한도까지 모두 모였다");
+    check(vkmap::chunkCount(vkmap::MAX_VALUE) <= vkmap::MAX_CHUNKS,
+          "한도를 채워도 조각 수가 규격 안에 있다");
+}
+
+static void test_map_rejects_skipped_chunk() {
+    // 0번 다음에 2번이 왔습니다. 1번이 통째로 사라진 상황입니다.
+    vkmap::Assembler asm_;
+    uint8_t data[vkmap::CHUNK_DATA];
+    std::memset(data, 'x', sizeof(data));
+
+    check(asm_.accept(1, 0, 3, data, vkmap::CHUNK_DATA) == vkmap::NEED_MORE,
+          "첫 조각은 받아들인다");
+    check(asm_.accept(1, 2, 3, data, vkmap::CHUNK_DATA) == vkmap::REJECTED,
+          "조각을 건너뛰면 버린다");
+    // 버린 뒤에는 0번부터 다시 시작해야 합니다.
+    check(asm_.accept(1, 1, 3, data, vkmap::CHUNK_DATA) == vkmap::REJECTED,
+          "버린 다음에는 이어 붙이지 않는다");
+    check(asm_.accept(1, 0, 1, data, 1) == vkmap::COMPLETE,
+          "0번부터 다시 시작하면 정상 동작한다");
+}
+
+static void test_map_rejects_bad_header() {
+    vkmap::Assembler asm_;
+    uint8_t data[4] = {'a', 'b', 'c', 'd'};
+
+    check(asm_.accept(0, 0, 1, data, 4) == vkmap::REJECTED, "0번 버튼은 없다");
+    check(asm_.accept(9, 0, 1, data, 4) == vkmap::REJECTED, "9번 버튼은 없다");
+    check(asm_.accept(1, 0, 0, data, 4) == vkmap::REJECTED, "조각 수 0은 말이 안 된다");
+    check(asm_.accept(1, 0, (uint8_t)(vkmap::MAX_CHUNKS + 1), data, 4) == vkmap::REJECTED,
+          "조각 수가 한도를 넘으면 버린다");
+    check(asm_.accept(1, 3, 3, data, 4) == vkmap::REJECTED, "조각 번호가 전체 수 이상이면 버린다");
+    check(asm_.accept(1, 0, 1, data, (uint8_t)(vkmap::CHUNK_DATA + 1)) == vkmap::REJECTED,
+          "조각 하나가 너무 길면 버린다");
+}
+
+static void test_map_rejects_changed_count_midway() {
+    // 보내는 도중에 "전체 3개"가 "전체 2개"로 바뀌었습니다. 다른 전송이 섞인 것입니다.
+    vkmap::Assembler asm_;
+    uint8_t data[vkmap::CHUNK_DATA];
+    std::memset(data, 'y', sizeof(data));
+
+    check(asm_.accept(2, 0, 3, data, vkmap::CHUNK_DATA) == vkmap::NEED_MORE,
+          "첫 조각을 받는다");
+    check(asm_.accept(2, 1, 2, data, vkmap::CHUNK_DATA) == vkmap::REJECTED,
+          "도중에 전체 개수가 바뀌면 버린다");
+}
+
+static void test_map_slots_do_not_interfere() {
+    // 1번 슬롯을 보내는 도중에 2번 슬롯 조각이 끼어들어도 서로 망가지면 안 됩니다.
+    vkmap::Assembler asm_;
+    uint8_t a[vkmap::CHUNK_DATA];
+    uint8_t b[vkmap::CHUNK_DATA];
+    std::memset(a, 'A', sizeof(a));
+    std::memset(b, 'B', sizeof(b));
+
+    check(asm_.accept(1, 0, 2, a, vkmap::CHUNK_DATA) == vkmap::NEED_MORE, "1번 첫 조각");
+    check(asm_.accept(2, 0, 1, b, 5) == vkmap::COMPLETE, "2번은 그 사이에 끝난다");
+    check(asm_.completed(2).len == 5, "2번 값이 온전하다");
+    check(asm_.accept(1, 1, 2, a, 3) == vkmap::COMPLETE, "1번도 이어서 끝난다");
+    check(asm_.completed(1).len == vkmap::CHUNK_DATA + 3, "1번 값이 온전하다");
+    check(asm_.completed(1).text[0] == 'A', "1번에 2번 내용이 섞이지 않았다");
+}
+
+static void test_map_frame_fits_protocol_limit() {
+    // 어떤 조각이든 VKP v1 의 payload 한도(16)를 넘지 않아야 합니다.
+    check(vkmap::HEADER_LEN + vkmap::CHUNK_DATA <= MAX_PAYLOAD,
+          "조각 하나가 payload 한도 안에 들어간다");
+
+    char big[vkmap::MAX_VALUE + 1];
+    std::memset(big, 'z', vkmap::MAX_VALUE);
+    big[vkmap::MAX_VALUE] = '\0';
+    vkmap::Entry entry = makeEntry(big);
+
+    for (uint8_t i = 0; i < vkmap::chunkCount(entry.len); i++) {
+        uint8_t p[MAX_PAYLOAD];
+        uint8_t n = vkmap::buildChunk(1, entry, i, p);
+        check(n > 0 && n <= MAX_PAYLOAD, "모든 조각이 한도 안에 들어간다");
+
+        // 실제로 프레임으로 감쌌을 때도 규격 안에 들어가는지 확인합니다.
+        uint8_t frame[MAX_FRAME];
+        check(encode(0, T_SET_MAP, p, n, frame) == (uint8_t)(n + OVERHEAD),
+              "조각을 프레임으로 감쌀 수 있다");
+    }
+}
+
+static void test_map_survives_corrupted_chunk_being_dropped() {
+    // 조각 하나가 CRC에서 걸려 버려졌다고 가정합니다(디코더가 아예 안 넘겨 줌).
+    // 남은 조각만으로 절반짜리 값이 저장되면 안 됩니다.
+    vkmap::Entry src = makeEntry("com.kakao.talk\n카카오톡");
+    vkmap::Assembler asm_;
+    uint8_t total = vkmap::chunkCount(src.len);
+    check(total >= 3, "이 값은 조각이 셋 이상이다");
+
+    bool sawComplete = false;
+    for (uint8_t i = 0; i < total; i++) {
+        if (i == 1) {
+            continue;               // 두 번째 조각이 통째로 사라졌습니다
+        }
+        uint8_t p[MAX_PAYLOAD];
+        uint8_t n = vkmap::buildChunk(1, src, i, p);
+        if (asm_.accept(p[0], p[1], p[2], p + vkmap::HEADER_LEN,
+                        (uint8_t)(n - vkmap::HEADER_LEN)) == vkmap::COMPLETE) {
+            sawComplete = true;
+        }
+    }
+    check(!sawComplete, "조각이 빠지면 절대 완성되지 않는다");
+}
+
+
+// ---------------------------------------------------------------- 주머니 오작동 차단
+
+/*
+ * 이 기기에서 가장 나쁜 두 가지 고장 중 하나가 "안 눌렀는데 실행되는 것"입니다.
+ * 사용자는 화면을 보지 않으므로 실행된 사실 자체를 모릅니다. 그런데 이 기기는
+ * 목에 걸거나 주머니에 넣고 다니는 물건이라, 옷감에 눌리는 일은 반드시 생깁니다.
+ *
+ * 아래 검사들은 "손가락처럼 보이는 것은 통과시키고, 옷감처럼 보이는 것은 막는가"를
+ * 봅니다. 막는 쪽만 잘해도 안 되고 — 진짜 누름을 막으면 기기가 고장 난 것과 같습니다.
+ */
+
+static void test_guard_allows_a_normal_press() {
+    vkguard::PocketGuard g;
+    g.onDown(1, 1000);
+    check(g.judge(1, 1200) == vkguard::ALLOW, "평범한 한 번 누름은 통과한다");
+    g.onUp(1, 1300);
+
+    // 한참 뒤에 다시 누르는 것도 당연히 통과해야 합니다.
+    g.onDown(2, 9000);
+    check(g.judge(2, 9150) == vkguard::ALLOW, "시간을 두고 누른 것도 통과한다");
+}
+
+static void test_guard_blocks_two_buttons_at_once() {
+    // 손가락 하나로 두 개를 동시에 누를 수는 없습니다. 옷감은 누릅니다.
+    vkguard::PocketGuard g;
+    g.onDown(1, 1000);
+    g.onDown(2, 1010);
+    check(g.judge(1, 1100) == vkguard::BLOCK_MULTI, "두 개가 같이 눌리면 막는다");
+}
+
+static void test_guard_blocks_the_survivor_of_a_double_press() {
+    // 두 개가 같이 눌렸다가 하나를 먼저 뗐습니다. 남은 하나가 "혼자 눌린 것"처럼
+    // 보이지만, 시작이 동시 눌림이었으므로 통과시키면 안 됩니다.
+    vkguard::PocketGuard g;
+    g.onDown(1, 1000);
+    g.onDown(2, 1010);
+    g.onUp(2, 1100);
+    check(g.judge(1, 1200) == vkguard::BLOCK_MULTI, "동시 눌림에서 살아남은 것도 막는다");
+}
+
+static void test_guard_blocks_a_stuck_button() {
+    // 8초 넘게 눌린 채입니다. 사람이 이렇게 오래 누르고 있지 않습니다.
+    vkguard::PocketGuard g;
+    g.onDown(3, 1000);
+    check(g.judge(3, 1000 + 8000) == vkguard::BLOCK_STUCK, "오래 눌려 있으면 막는다");
+}
+
+static void test_guard_allows_a_long_press_for_ai() {
+    // "길게 누름"(0.7초)은 AI 도우미를 부르는 정상 동작입니다. 막으면 안 됩니다.
+    vkguard::PocketGuard g;
+    g.onDown(1, 1000);
+    check(g.judge(1, 1700) == vkguard::ALLOW, "AI 도우미용 길게 누름은 통과한다");
+    check(g.judge(1, 4000) == vkguard::ALLOW, "3초를 눌러도 아직은 사람으로 본다");
+}
+
+static void test_guard_blocks_rubbing_burst() {
+    // 짧은 시간에 여러 번 몰립니다 — 주머니에서 비벼진 모양입니다.
+    vkguard::PocketGuard g;
+    uint32_t t = 1000;
+    int allowed = 0;
+    for (int i = 0; i < 8; i++) {
+        g.onDown(1, t);
+        if (g.judge(1, t) == vkguard::ALLOW) {
+            allowed++;
+        }
+        g.onUp(1, t + 50);
+        t += 300;                  // 0.3초 간격으로 계속
+    }
+    check(allowed < 8, "연달아 눌리면 어느 시점부터 막는다");
+    check(allowed >= 3, "처음 몇 번은 사람일 수도 있으니 통과시킨다");
+    check(g.blockedTotal() > 0, "막은 횟수를 세어 둔다");
+}
+
+static void test_guard_cools_down_then_recovers() {
+    // 한 번 주머니로 판정하면 잠시 쉬고, 조용해지면 스스로 풀려야 합니다.
+    vkguard::PocketGuard g;
+    g.onDown(1, 1000);
+    g.onDown(2, 1005);
+    check(g.judge(1, 1100) == vkguard::BLOCK_MULTI, "동시 눌림으로 쉬는 시간에 들어간다");
+    g.onUp(1, 1200);
+    g.onUp(2, 1200);
+
+    check(g.judge(1, 1300) == vkguard::BLOCK_COOLDOWN, "쉬는 동안에는 계속 막는다");
+
+    // 충분히 조용해진 뒤에는 다시 받아 줘야 합니다.
+    g.onDown(1, 20000);
+    check(g.judge(1, 20100) == vkguard::ALLOW, "조용해지면 스스로 풀린다");
+}
+
+static void test_guard_counts_each_reason_separately() {
+    vkguard::PocketGuard g;
+    g.onDown(1, 1000);
+    g.onDown(2, 1005);
+    g.judge(1, 1100);                       // MULTI
+    g.onUp(1, 1200);
+    g.onUp(2, 1200);
+
+    g.onDown(3, 30000);
+    g.judge(3, 30000 + 9000);               // STUCK
+    g.onUp(3, 40000);
+
+    check(g.blockedMulti() == 1, "동시 눌림을 따로 센다");
+    check(g.blockedStuck() == 1, "오래 눌림을 따로 센다");
+    check(g.blockedTotal() >= 2, "합계가 맞는다");
+}
+
+static void test_guard_survives_millis_wraparound() {
+    // millis() 는 약 49일마다 0으로 돌아갑니다. 그때 모든 누름이 막히거나
+    // 반대로 모든 판정이 풀려 버리면 안 됩니다.
+    const uint32_t nearMax = 0xFFFFFF00u;
+    vkguard::PocketGuard g;
+
+    g.onDown(1, nearMax);
+    check(g.judge(1, (uint32_t)(nearMax + 200)) == vkguard::ALLOW,
+          "자릿수가 넘어가는 순간에도 정상 누름은 통과한다");
+    g.onUp(1, (uint32_t)(nearMax + 300));
+
+    g.onDown(2, (uint32_t)(nearMax + 400));
+    check(g.judge(2, (uint32_t)(nearMax + 400 + 9000)) == vkguard::BLOCK_STUCK,
+          "자릿수가 넘어가도 오래 눌림은 막는다");
+}
+
+static void test_guard_ignores_unknown_button_numbers() {
+    vkguard::PocketGuard g;
+    g.onDown(0, 1000);         // 없는 버튼
+    g.onDown(9, 1000);
+    g.onUp(0, 1100);
+    g.onUp(9, 1100);
+    g.onDown(1, 1200);
+    check(g.judge(1, 1300) == vkguard::ALLOW, "없는 버튼 번호는 조용히 무시한다");
+}
+
 int main() {
     std::printf("바이브키 펌웨어 단위 테스트\n");
     std::printf("---------------------------------------------\n");
@@ -617,6 +937,27 @@ int main() {
     test_buffer_keeps_newest_when_full();
     test_buffer_survives_millis_wraparound();
     test_seq_resync_after_restart_has_no_duplicate_execution();
+
+    test_map_roundtrip_long_package_name();
+    test_map_roundtrip_short_and_empty();
+    test_map_fills_maximum_length();
+    test_map_rejects_skipped_chunk();
+    test_map_rejects_bad_header();
+    test_map_rejects_changed_count_midway();
+    test_map_slots_do_not_interfere();
+    test_map_frame_fits_protocol_limit();
+    test_map_survives_corrupted_chunk_being_dropped();
+
+    test_guard_allows_a_normal_press();
+    test_guard_blocks_two_buttons_at_once();
+    test_guard_blocks_the_survivor_of_a_double_press();
+    test_guard_blocks_a_stuck_button();
+    test_guard_allows_a_long_press_for_ai();
+    test_guard_blocks_rubbing_burst();
+    test_guard_cools_down_then_recovers();
+    test_guard_counts_each_reason_separately();
+    test_guard_survives_millis_wraparound();
+    test_guard_ignores_unknown_button_numbers();
 
     std::printf("---------------------------------------------\n");
     std::printf("통과 %d개 / 실패 %d개\n", g_pass, g_fail);

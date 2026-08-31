@@ -65,6 +65,14 @@ public class SettingsActivity extends BaseActivity {
                 DiagnosticsActivity.open(SettingsActivity.this);
             }
         });
+
+        // 처음 설정을 다시 하고 싶으실 때. (가족이 대신 다시 잡아 드릴 때도 씁니다)
+        findViewById(R.id.btnRedoOnboarding).setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                OnboardingActivity.open(SettingsActivity.this, true);
+            }
+        });
     }
 
     @Override

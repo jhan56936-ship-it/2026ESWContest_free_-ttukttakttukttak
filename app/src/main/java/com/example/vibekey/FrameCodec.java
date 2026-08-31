@@ -39,12 +39,19 @@ public final class FrameCodec {
     public static final int T_EVT_PRESS = 0x01;
     public static final int T_HELLO     = 0x02;
     public static final int T_STATS     = 0x03;
+    public static final int T_MAP       = 0x04;   // 기기에 저장된 버튼 매핑 (조각 단위)
+    public static final int T_STATS2    = 0x05;   // 주머니 오작동 차단 집계
 
     // 폰 → 기기
     public static final int T_ACK       = 0x10;
     public static final int T_PING      = 0x12;
     // 0x11 은 예전에 진동 패턴 지시(FEEDBACK)로 쓰던 번호입니다. 기기에 출력 장치가
     // 없어 지금은 쓰지 않지만, 나중에 표시 장치를 붙일 때를 위해 비워 둡니다.
+    public static final int T_SET_MAP   = 0x13;   // 이 버튼 매핑을 기기에 저장해 둬
+    public static final int T_GET_MAP   = 0x14;   // 기기가 저장해 둔 매핑을 알려 줘
+
+    /** HELLO 의 caps 비트: 기기가 버튼 매핑을 저장할 수 있음 */
+    public static final int CAP_SLOT_STORE = 0x01;
 
     // 누름 종류
     public static final int K_SHORT  = 0;

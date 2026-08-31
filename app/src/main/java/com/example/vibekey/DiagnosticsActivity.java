@@ -21,7 +21,10 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.pm.ShortcutManagerCompat;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 테스트(자가진단) 화면.
@@ -190,6 +193,10 @@ public class DiagnosticsActivity extends BaseActivity {
         checks.addAll(checkSlots());
         checks.add(checkShortcuts());
         checks.add(checkOfflineKeywords());
+        checks.add(checkFirstSetup());
+        checks.add(checkAiPlanFilter());
+        checks.add(checkDeviceSlotStore());
+        checks.add(checkPocketGuard());
         // 기기에 "상태를 알려 달라"고 먼저 물어봅니다. 답은 아래 항목들에서 확인합니다.
         UsbSerialService.requestDeviceStatus();
         checks.add(checkDeviceProtocol());
@@ -378,6 +385,54 @@ public class DiagnosticsActivity extends BaseActivity {
         return new Check("AI 없이 앱 찾기", ok,
                 ok ? "낱말 " + KeywordMatcher.keywordCount() + "개로 찾을 수 있어요."
                         : "사전을 읽지 못했어요.");
+    }
+
+
+    private Check checkFirstSetup() {
+        boolean done = prefs.isOnboarded();
+        return new Check("처음 설정", done,
+                done ? "마쳤어요. 다시 하려면 설정 화면에서 '처음 설정 다시 하기'를 눌러 주세요."
+                        : "아직 안 하셨어요. 자주 하는 일을 고르시면 AI가 단추를 정해 드려요.");
+    }
+
+    private Check checkAiPlanFilter() {
+        // AI가 "이 휴대폰에 없는 앱"을 골랐을 때 정말 걸러지는지 그 자리에서 시험합니다.
+        // 이 검사가 실패하면, 눌러도 아무 일도 안 일어나는 단추가 생길 수 있습니다.
+        Set<String> installed = new HashSet<>();
+        for (AppItem item : appRepository.getInstalledApps()) {
+            installed.add(item.packageName);
+        }
+
+        List<SlotPlanner.Assignment> fake = new ArrayList<>();
+        fake.add(new SlotPlanner.Assignment(1, "com.this.app.does.not.exist", "없는 앱", "", true));
+        List<SlotPlanner.Assignment> filtered =
+                SlotPlanner.reconcile(fake, Collections.<String>emptyList(), installed);
+
+        boolean ok = filtered.isEmpty();
+        return new Check("AI 답 걸러 내기", ok,
+                ok ? "AI가 없는 앱을 골라도 단추에 안 들어가요. (고를 수 있는 일 "
+                        + FunctionCatalog.size() + "가지)"
+                        : "없는 앱이 걸러지지 않았어요.");
+    }
+
+
+    private Check checkPocketGuard() {
+        // 기기가 "주머니에서 눌린 것 같아 걸렀다"고 보고한 숫자입니다.
+        // 0이면 좋은 것이고, 0이 아니어도 고장이 아니라 제대로 막고 있다는 뜻입니다.
+        String summary = UsbSerialService.guardSummary();
+        if (TextUtils.isEmpty(summary)) {
+            return new Check("주머니 오작동 막기", true,
+                    "기기를 꽂으면 여기에 걸러 낸 횟수가 나옵니다.");
+        }
+        return new Check("주머니 오작동 막기", true, summary);
+    }
+
+    private Check checkDeviceSlotStore() {
+        // 기기에 매핑이 저장돼 있으면 폰을 바꿔도 설정이 따라옵니다.
+        boolean saved = prefs.hasAnyExplicitSlot();
+        return new Check("기기에 설정 저장", saved,
+                saved ? "정해 두신 버튼을 기기에도 적어 둡니다. 폰을 바꿔도 그대로 따라옵니다."
+                        : "아직 정해 둔 버튼이 없어 기기에 적을 것이 없어요.");
     }
 
     // ------------------------------------------------------------------ 결과 그리기

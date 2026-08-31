@@ -232,6 +232,16 @@
                 android:text="@string/test_open"
                 app:icon="@drawable/ic_check"
                 app:iconGravity="textStart" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRedoOnboarding"
+                style="@style/VkButton.Outline"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="@dimen/space_s"
+                android:text="@string/settings_onboard_again"
+                app:icon="@drawable/ic_sparkle"
+                app:iconGravity="textStart" />
         </LinearLayout>
 
         <!-- 권한 -->

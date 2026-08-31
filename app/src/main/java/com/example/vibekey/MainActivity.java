@@ -48,6 +48,11 @@ public class MainActivity extends BaseActivity {
     private AppRepository appRepository;
     private GeminiClient gemini;
 
+    /** 첫 설정 화면은 한 번만 띄웁니다. (뒤로 가기를 눌러도 다시 뜨지 않게) */
+    private boolean onboardingLaunched;
+    /** 권한 안내도 화면당 한 번만 여쭙니다. */
+    private boolean overlayAsked;
+
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
@@ -118,7 +123,6 @@ public class MainActivity extends BaseActivity {
 
         startUsbService();
         RoutineBridge.refreshShortcuts(this);
-        checkOverlayPermission();
     }
 
     /** USB를 꽂으면 잠금 화면 위에서도 앱이 바로 보이도록 합니다. */
@@ -169,9 +173,9 @@ public class MainActivity extends BaseActivity {
         if (TextUtils.isEmpty(appName)) {
             message = "이 단추에는 아직 아무것도 없어요.";
         } else if ("APP".equals(actionType)) {
-            message = "지금은 '" + appName + "'이(가) 열려요.";
+            message = "지금은 '" + appName + "'" + KoreanParticle.iGa(appName) + " 열려요.";
         } else {
-            message = "지금은 '" + appName + "'이(가) 실행돼요.";
+            message = "지금은 '" + appName + "'" + KoreanParticle.iGa(appName) + " 실행돼요.";
         }
 
         new MaterialAlertDialogBuilder(this)
@@ -335,6 +339,7 @@ public class MainActivity extends BaseActivity {
         }
         refreshHardwareMap();
         RoutineBridge.refreshShortcuts(this);
+        UsbSerialService.pushSlotMap(this);   // 기기 플래시에도 같은 값을 적어 둡니다
 
         String message = applied > 0
                 ? applied + "개 버튼에 앱을 넣었어요."
@@ -395,6 +400,20 @@ public class MainActivity extends BaseActivity {
         appRepository.invalidate();
         refreshHardwareMap();
         RoutineBridge.refreshShortcuts(this);
+
+        // 처음 켠 분이라면 설정 화면부터 보여 드립니다.
+        // (자주 하는 일을 고르시면 AI가 단추 1·2·3번을 알아서 정해 드립니다.)
+        if (!onboardingLaunched && !prefs.isOnboarded()) {
+            onboardingLaunched = true;
+            OnboardingActivity.open(this, false);
+            return;
+        }
+
+        // 첫 설정을 마친 뒤에 권한을 여쭙습니다. 한꺼번에 물으면 어르신이 당황하십니다.
+        if (!overlayAsked) {
+            overlayAsked = true;
+            checkOverlayPermission();
+        }
     }
 
     @Override

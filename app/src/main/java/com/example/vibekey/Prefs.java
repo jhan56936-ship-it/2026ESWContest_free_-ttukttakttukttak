@@ -78,6 +78,24 @@ public final class Prefs {
                 .apply();
     }
 
+
+    /**
+     * 사용자가(또는 AI가) 실제로 정해 둔 버튼이 하나라도 있는지 봅니다.
+     *
+     * <p>{@link #hasSlot}과 다른 점: 1번 버튼에는 처음부터 기본값(지도)이 들어 있어
+     * 아무것도 안 정한 새 폰에서도 hasSlot(1)은 true 입니다. 기기에 저장해 둔 매핑을
+     * 되찾아 올지 판단할 때는 "정말 아무것도 없는 상태"를 알아야 하므로,
+     * 여기서는 기본값을 빼고 <b>실제로 저장된 값</b>만 셉니다.
+     */
+    public boolean hasAnyExplicitSlot() {
+        for (int slot = 1; slot <= SLOT_COUNT; slot++) {
+            if (prefs.contains(packageKey(slot)) || prefs.contains(labelKey(slot))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     // ---------------------------------------------------------------- 버튼 슬롯: 빠른 동작
     // 앱을 여는 대신 전화 걸기·문자 보내기·길찾기처럼 정해진 동작을 바로 실행하는 슬롯입니다.
 

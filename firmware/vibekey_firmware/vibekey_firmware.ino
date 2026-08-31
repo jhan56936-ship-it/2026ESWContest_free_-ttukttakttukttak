@@ -52,10 +52,13 @@
 #include <esp_heap_caps.h>
 #include <esp_sleep.h>
 #include <driver/gpio.h>
+#include <Preferences.h>
 
 #include "vkp_frame.h"
 #include "press_fsm.h"
 #include "press_buffer.h"
+#include "slot_store.h"
+#include "pocket_guard.h"
 
 using namespace vkp;
 
@@ -146,6 +149,14 @@ static QueueHandle_t edgeQueue   = nullptr;
 static QueueHandle_t pressQueue  = nullptr;
 
 static PressFsm  fsm[BUTTON_COUNT];
+
+/**
+ * 주머니·가방 안에서 옷감에 눌린 것을 걸러 냅니다.
+ * 걸러 내는 판단을 폰이 아니라 기기가 하는 이유는, 주머니에 들어 있는 동안이
+ * 바로 폰이 잠들어 있는 시간이기 때문입니다. (pocket_guard.h)
+ */
+static vkguard::PocketGuard pocket;
+
 static Decoder   rx;
 
 /** 보고서에 그대로 넣을 수 있는 실측 카운터 */
@@ -206,6 +217,20 @@ static void IRAM_ATTR onButtonEdge(void* arg) {
 
 // ---------------------------------------------------------------- 입력 태스크
 
+/**
+ * 확정된 누름을 폰으로 내보내도 되는지 마지막으로 한 번 더 봅니다.
+ *
+ * 상태머신(press_fsm.h)은 "이 접점이 사람이 의도한 한 번의 누름인가"를 봅니다.
+ * 여기서는 그보다 넓게 "이 상황 자체가 사람이 누르는 상황인가"를 봅니다.
+ * 옷감은 여러 개를 한꺼번에, 오래, 여러 번 누릅니다. (pocket_guard.h)
+ *
+ * 걸러 낸 것은 세어 두었다가 STATS2 로 앱에 보고합니다. 사용자가
+ * "왜 안 눌렸지?" 하고 물을 때 답할 근거가 됩니다.
+ */
+static bool allowPress(uint8_t button, uint32_t nowMs) {
+    return pocket.judge(button, nowMs) == vkguard::ALLOW;
+}
+
 static void inputTask(void* /*arg*/) {
     esp_task_wdt_add(nullptr);          // 이 태스크를 워치독 감시 대상에 넣습니다
     EdgeMsg edge;
@@ -222,7 +247,16 @@ static void inputTask(void* /*arg*/) {
             uint32_t ageMs  = (uint32_t)(micros() - edge.stampUs) / 1000;
             uint32_t edgeMs = millis() - ageMs;
 
-            if (fsm[edge.index].onEdge(down, edgeMs, kind)) {
+            // 주머니 판정기에도 접점 변화를 그대로 알려 줍니다.
+            // (두 개가 동시에 눌렸는지, 얼마나 오래 눌려 있는지를 여기서 셉니다)
+            if (down) {
+                pocket.onDown((uint8_t)(edge.index + 1), edgeMs);
+            } else {
+                pocket.onUp((uint8_t)(edge.index + 1), edgeMs);
+            }
+
+            if (fsm[edge.index].onEdge(down, edgeMs, kind)
+                    && allowPress((uint8_t)(edge.index + 1), edgeMs)) {
                 PressMsg press = {(uint8_t)(edge.index + 1), kind, edge.stampUs};
                 xQueueSend(pressQueue, &press, 0);
             }
@@ -232,7 +266,7 @@ static void inputTask(void* /*arg*/) {
         uint32_t nowMs = millis();
         for (uint8_t i = 0; i < BUTTON_COUNT; i++) {
             uint8_t kind;
-            if (fsm[i].tick(nowMs, kind)) {
+            if (fsm[i].tick(nowMs, kind) && allowPress((uint8_t)(i + 1), nowMs)) {
                 PressMsg press = {(uint8_t)(i + 1), kind, micros()};
                 xQueueSend(pressQueue, &press, 0);
             }
@@ -263,12 +297,109 @@ static void writeFrame(uint8_t seq, uint8_t type, const uint8_t* payload, uint8_
     Serial.flush();
 }
 
+// ---------------------------------------------------------------- 버튼 매핑 저장
+//
+// "1번 버튼 = 카카오톡" 은 지금까지 폰에만 있었습니다. 그래서 폰을 바꾸거나 앱을
+// 다시 깔면 어르신이 처음부터 다시 정하셔야 했습니다. 그 부담은 기기를 새로 받는
+// 것과 다르지 않습니다. 이제 앱이 매핑을 정하면(직접 고르시든, AI가 정하든)
+// 그 결과를 기기 플래시(NVS)에도 같이 적습니다. 새 폰에서는 기기가 먼저 알려 줍니다.
+//
+// 저장 형식은 슬롯마다 "패키지명\n보여 줄 이름" 한 줄입니다.
+// 16바이트 payload 한도를 넘으므로 조각으로 나눠 주고받습니다. (slot_store.h)
+
+static Preferences      nvs;
+static vkmap::Entry     slotMap[vkmap::MAX_SLOTS];
+static vkmap::Assembler mapRx;
+
+static const char* NVS_NAMESPACE = "vibekey";
+
+static void nvsKeyFor(uint8_t slot, char* out) {
+    out[0] = 's';
+    out[1] = 'l';
+    out[2] = 'o';
+    out[3] = 't';
+    out[4] = (char)('0' + slot);
+    out[5] = '\0';
+}
+
+/** 부팅할 때 플래시에 적어 둔 매핑을 읽어 옵니다. */
+static void loadSlotMap() {
+    if (!nvs.begin(NVS_NAMESPACE, /*readOnly=*/true)) {
+        return;                      // 아직 한 번도 저장한 적이 없습니다
+    }
+    for (uint8_t slot = 1; slot <= vkmap::MAX_SLOTS; slot++) {
+        char key[8];
+        nvsKeyFor(slot, key);
+        char buf[vkmap::MAX_VALUE];
+        size_t n = nvs.getBytes(key, buf, sizeof(buf));
+        if (n > 0 && n <= vkmap::MAX_VALUE) {
+            slotMap[slot - 1].set(buf, (uint8_t)n);
+        }
+    }
+    nvs.end();
+}
+
+/** 슬롯 하나를 플래시에 적습니다. 값이 그대로면 쓰지 않습니다(플래시 수명). */
+static void saveSlot(uint8_t slot, const vkmap::Entry& entry) {
+    if (slot < 1 || slot > vkmap::MAX_SLOTS) {
+        return;
+    }
+    vkmap::Entry& current = slotMap[slot - 1];
+    if (current.len == entry.len &&
+        memcmp(current.text, entry.text, entry.len) == 0) {
+        return;                      // 같은 값이면 플래시를 건드리지 않습니다
+    }
+    current = entry;
+
+    if (!nvs.begin(NVS_NAMESPACE, /*readOnly=*/false)) {
+        return;
+    }
+    char key[8];
+    nvsKeyFor(slot, key);
+    if (entry.len == 0) {
+        nvs.remove(key);
+    } else {
+        nvs.putBytes(key, entry.text, entry.len);
+    }
+    nvs.end();
+}
+
 static void sendHello() {
-    // caps: 기기가 가진 기능 비트. 지금은 출력 장치가 없어 0입니다.
+    // caps: 기기가 가진 기능 비트. CAP_SLOT_STORE 는 "버튼 매핑을 내가 들고 있을 수 있다"는 뜻입니다.
+    // 앱은 이 비트를 보고, 새 폰에서 매핑을 되찾아 갈지 정합니다.
     // 마지막 바이트는 "이 기기가 마지막으로 왜 재시작했는지" 입니다. 정상 부팅인지,
     // 워치독이 물었는지, 전압이 떨어졌는지를 앱의 자가진단 화면에서 볼 수 있습니다.
-    uint8_t p[6] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, 0x00, bootReason};
+    uint8_t p[6] = {PROTO_VERSION, FW_MAJOR, FW_MINOR, BUTTON_COUNT, CAP_SLOT_STORE, bootReason};
     writeFrame(0, T_HELLO, p, sizeof(p));
+}
+
+/**
+ * 저장해 둔 매핑을 조각내어 폰에 보냅니다.
+ * 폰이 GET_MAP 을 보냈을 때, 그리고 저장이 끝났을 때(확인 회신) 씁니다.
+ *
+ * SEQ 는 0(답을 기다리지 않는 알림)으로 보냅니다. 이 값은 놓쳐도 어르신이 손해를
+ * 보지 않고, 폰이 다시 물어보면 되기 때문에 재전송 대기열을 차지하지 않게 했습니다.
+ */
+static void sendSlotMap(uint8_t slot) {
+    if (slot < 1 || slot > vkmap::MAX_SLOTS) {
+        return;
+    }
+    const vkmap::Entry& entry = slotMap[slot - 1];
+    uint8_t total = vkmap::chunkCount(entry.len);
+    for (uint8_t index = 0; index < total; index++) {
+        uint8_t p[MAX_PAYLOAD];
+        uint8_t n = vkmap::buildChunk(slot, entry, index, p);
+        if (n == 0) {
+            return;
+        }
+        writeFrame(0, T_MAP, p, n);
+    }
+}
+
+static void sendAllSlotMaps() {
+    for (uint8_t slot = 1; slot <= vkmap::MAX_SLOTS; slot++) {
+        sendSlotMap(slot);
+    }
 }
 
 // 폰이 없는 동안 눌린 것을 담아 둡니다. protoTask 만 건드리므로 잠금이 필요 없습니다.
@@ -296,6 +427,28 @@ static void sendStats() {
         (uint8_t)(drops & 0xFF),             (uint8_t)(drops >> 8)
     };
     writeFrame(0, T_STATS, p, sizeof(p));
+}
+
+
+/**
+ * 주머니로 보고 걸러 낸 집계를 보냅니다.
+ *
+ * STATS 의 payload 는 이미 규격 최대치(16바이트)라 더 얹을 자리가 없어
+ * 종류를 하나 나눴습니다. 이 숫자가 있어야 사용자가 "왜 안 눌렸지?"라고
+ * 물었을 때 앱이 "주머니에서 눌린 것으로 보아 N번 걸렀어요"라고 답할 수 있습니다.
+ */
+static void sendGuardStats() {
+    uint16_t total = pocket.blockedTotal();
+    uint16_t multi = pocket.blockedMulti();
+    uint16_t stuck = pocket.blockedStuck();
+    uint16_t burst = (uint16_t)(pocket.blockedBurst() + pocket.blockedCooldown());
+    uint8_t p[8] = {
+        (uint8_t)(total & 0xFF), (uint8_t)(total >> 8),
+        (uint8_t)(multi & 0xFF), (uint8_t)(multi >> 8),
+        (uint8_t)(stuck & 0xFF), (uint8_t)(stuck >> 8),
+        (uint8_t)(burst & 0xFF), (uint8_t)(burst >> 8)
+    };
+    writeFrame(0, T_STATS2, p, sizeof(p));
 }
 
 /** 버튼이 하나라도 눌려 있으면 true (INPUT_PULLUP 이라 눌림 = LOW) */
@@ -389,7 +542,26 @@ static void protoTask(void* /*arg*/) {
                 case T_PING:
                     sendHello();
                     sendStats();
+                    sendGuardStats();
                     break;
+                case T_GET_MAP:
+                    // 새 폰이 "네가 들고 있는 설정을 알려 줘"라고 물었습니다.
+                    sendAllSlotMaps();
+                    break;
+                case T_SET_MAP: {
+                    // 조각을 모읍니다. 다 모이면 플래시에 적고 그대로 되읽어 보냅니다.
+                    // 되읽어 보내는 것이 곧 "잘 저장됐다"는 확인이라, 따로 ACK를 두지 않았습니다.
+                    uint8_t slot = f.u8(0);
+                    vkmap::Result r = mapRx.accept(slot, f.u8(1), f.u8(2),
+                                                   f.payload + vkmap::HEADER_LEN,
+                                                   f.len > vkmap::HEADER_LEN
+                                                       ? (uint8_t)(f.len - vkmap::HEADER_LEN) : 0);
+                    if (r == vkmap::COMPLETE) {
+                        saveSlot(slot, mapRx.completed(slot));
+                        sendSlotMap(slot);
+                    }
+                    break;
+                }
                 default:
                     break;
             }
@@ -506,6 +678,9 @@ void setup() {
     if (esp_task_wdt_init(&wdtCfg) == ESP_ERR_INVALID_STATE) {
         esp_task_wdt_reconfigure(&wdtCfg);
     }
+
+    // 플래시에 적어 둔 버튼 매핑을 먼저 읽어 둡니다. 폰이 물어보면 바로 답할 수 있게.
+    loadSlotMap();
 
     edgeQueue   = xQueueCreate(32, sizeof(EdgeMsg));
     pressQueue  = xQueueCreate(8,  sizeof(PressMsg));

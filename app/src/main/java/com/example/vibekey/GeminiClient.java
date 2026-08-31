@@ -209,25 +209,7 @@ public class GeminiClient {
         generateJson(system, user, new Callback<JSONObject>() {
             @Override
             public void onSuccess(JSONObject json) {
-                List<SlotSuggestion> list = new ArrayList<>();
-                JSONArray array = json.optJSONArray("suggestions");
-                if (array != null) {
-                    for (int i = 0; i < array.length(); i++) {
-                        JSONObject item = array.optJSONObject(i);
-                        if (item == null) {
-                            continue;
-                        }
-                        SlotSuggestion s = new SlotSuggestion();
-                        s.slot = item.optInt("slot", i + 1);
-                        s.packageName = item.optString("packageName", "").trim();
-                        s.label = item.optString("label", "").trim();
-                        s.reason = item.optString("reason", "").trim();
-                        if (!TextUtils.isEmpty(s.packageName)) {
-                            list.add(s);
-                        }
-                    }
-                }
-                callback.onSuccess(list);
+                callback.onSuccess(parseSuggestions(json));
             }
 
             @Override
@@ -237,7 +219,88 @@ public class GeminiClient {
         });
     }
 
-    // ------------------------------------------------------------------ 기능 4: 키 확인
+    // ------------------------------------------------------------------ 기능 4: 첫 실행 키 매핑
+
+    /**
+     * 첫 실행에서 어르신이 고르신 "자주 하는 일"을 보고, 기기 단추 1·2·3번에
+     * 어떤 앱을 넣을지 AI가 직접 정해 줍니다.
+     *
+     * <p>여기서 나온 답은 그대로 쓰지 않고 {@link SlotPlanner#reconcile}로 한 번 걸러 냅니다.
+     * AI가 이 휴대폰에 없는 앱을 고르더라도 어르신 화면에는 올라가지 않습니다.
+     *
+     * @param chosenFunctions 고르신 일들의 한국어 이름 (예: "전화 걸기, 길 찾기")
+     * @param appCatalog      "패키지명 | 앱이름" 목록
+     */
+    public void assignSlotsForFunctions(final String chosenFunctions,
+                                        final String appCatalog,
+                                        final Callback<List<SlotSuggestion>> callback) {
+        String system = "당신은 어르신용 하드웨어 단추 3개에 앱을 배치해 드리는 도우미입니다.\n"
+                + "어르신이 '내가 자주 하는 일'을 직접 고르셨습니다. 그 일을 실제로 할 수 있는 앱을\n"
+                + "이 휴대폰에서 찾아 단추에 하나씩 연결해 주세요.\n\n"
+                + "이 휴대폰에 설치된 앱 목록입니다 (형식: 패키지명 | 앱 이름):\n"
+                + appCatalog + "\n"
+                + "규칙:\n"
+                + "1. 반드시 위 목록에 있는 패키지명만 그대로 적습니다. 목록에 없는 것은 절대 지어내지 않습니다.\n"
+                + "2. 단추는 1번, 2번, 3번 세 개뿐입니다. slot 에는 1·2·3 만 씁니다.\n"
+                + "3. 어르신이 먼저 고르신 일일수록 앞 단추(1번)에 둡니다. 왼쪽 단추가 가장 누르기 쉽습니다.\n"
+                + "4. 서로 다른 앱 3개를 고릅니다. 같은 앱을 두 단추에 넣지 않습니다.\n"
+                + "5. 고르신 일이 3가지보다 적으면, 어르신이 자주 쓰실 만한 일(전화·길찾기 등)로 남은 단추를 채웁니다.\n"
+                + "6. 고르신 일에 딱 맞는 앱이 없으면 가장 비슷한 일을 하는 앱을 고릅니다.\n"
+                + "7. reason 은 '왜 이 단추에 이 앱인지'를 어르신께 드리는 아주 쉬운 한 문장으로 씁니다.\n"
+                + "   존댓말을 쓰고, 어려운 외래어는 쓰지 않으며, 25자를 넘기지 않습니다.\n\n"
+                + "반드시 아래 형식의 JSON 하나만 출력하세요.\n"
+                + "{\"suggestions\":[{\"slot\":1,\"packageName\":\"\",\"label\":\"\",\"reason\":\"\"},"
+                + "{\"slot\":2,\"packageName\":\"\",\"label\":\"\",\"reason\":\"\"},"
+                + "{\"slot\":3,\"packageName\":\"\",\"label\":\"\",\"reason\":\"\"}]}";
+
+        String user = "제가 자주 하는 일은 이렇습니다: " + chosenFunctions + "\n"
+                + "지금은 " + currentTimeDescription() + " 입니다. 단추 3개를 정해 주세요.";
+
+        generateJson(system, user, new Callback<JSONObject>() {
+            @Override
+            public void onSuccess(JSONObject json) {
+                callback.onSuccess(parseSuggestions(json));
+            }
+
+            @Override
+            public void onError(String message) {
+                callback.onError(message);
+            }
+        });
+    }
+
+    /**
+     * {"suggestions":[...]} 모양의 답에서 배치 목록을 꺼냅니다.
+     * 안드로이드 클래스를 쓰지 않아 단위 테스트로 바로 검증할 수 있습니다.
+     * (app/src/test/java/com/example/vibekey/GeminiJsonTest.java)
+     */
+    static List<SlotSuggestion> parseSuggestions(JSONObject json) {
+        List<SlotSuggestion> list = new ArrayList<>();
+        if (json == null) {
+            return list;
+        }
+        JSONArray array = json.optJSONArray("suggestions");
+        if (array == null) {
+            return list;
+        }
+        for (int i = 0; i < array.length(); i++) {
+            JSONObject item = array.optJSONObject(i);
+            if (item == null) {
+                continue;
+            }
+            SlotSuggestion s = new SlotSuggestion();
+            s.slot = item.optInt("slot", i + 1);
+            s.packageName = item.optString("packageName", "").trim();
+            s.label = item.optString("label", "").trim();
+            s.reason = item.optString("reason", "").trim();
+            if (!s.packageName.isEmpty()) {
+                list.add(s);
+            }
+        }
+        return list;
+    }
+
+    // ------------------------------------------------------------------ 기능 5: 키 확인
 
     /** 설정 화면에서 "연결 확인하기"를 눌렀을 때 API 키가 실제로 동작하는지 검사합니다. */
     public void testApiKey(final Callback<String> callback) {

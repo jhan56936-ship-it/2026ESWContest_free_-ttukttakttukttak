@@ -74,6 +74,26 @@
     <string name="test_log_empty">아직 들어온 신호가 없어요.</string>
     <string name="test_log_clear">기록 지우기</string>
 
+    <!-- 첫 실행: 자주 하는 일 고르기 → AI가 단추 배치 -->
+    <string name="onboard_title">무엇을 자주 하시나요?</string>
+    <string name="onboard_subtitle">자주 쓰시는 것을 눌러 주세요.\n두세 가지만 고르시면 됩니다.</string>
+    <string name="onboard_pick_title">고르기</string>
+    <string name="onboard_selected">골랐어요</string>
+    <string name="onboard_next">다 골랐어요</string>
+    <string name="onboard_skip">나중에 할게요</string>
+    <string name="onboard_need_pick">하나 이상 골라 주세요</string>
+    <string name="onboard_picked_count">%1$d가지를 고르셨어요</string>
+    <string name="onboard_working">AI가 단추를 정하고 있어요…</string>
+    <string name="onboard_result_title">이렇게 넣어 드릴까요?</string>
+    <string name="onboard_result_ai">AI가 고르신 것에 맞춰 단추를 정했어요.</string>
+    <string name="onboard_result_offline">인터넷 없이 정했어요. 언제든 바꾸실 수 있어요.</string>
+    <string name="onboard_result_slot">%1$d번 단추</string>
+    <string name="onboard_apply">이대로 쓸게요</string>
+    <string name="onboard_retry">다시 고를래요</string>
+    <string name="onboard_empty">넣을 앱을 찾지 못했어요.\n나중에 홈 화면에서 직접 정해 주세요.</string>
+    <string name="onboard_done">다 됐어요. 이제 기기의 단추를 눌러 보세요.</string>
+    <string name="settings_onboard_again">처음 설정 다시 하기</string>
+
     <!-- 공통 -->
     <string name="ok">확인</string>
     <string name="cancel">취소</string>

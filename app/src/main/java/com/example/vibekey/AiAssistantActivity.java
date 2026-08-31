@@ -243,7 +243,7 @@ public class AiAssistantActivity extends BaseActivity {
         }
         new MaterialAlertDialogBuilder(this)
                 .setTitle("앱을 열까요?")
-                .setMessage("'" + item.label + "'을(를) 지금 열어 드릴까요?")
+                .setMessage("'" + item.label + "'" + KoreanParticle.eulReul(item.label) + " 지금 열어 드릴까요?")
                 .setPositiveButton("네, 열어 주세요", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
