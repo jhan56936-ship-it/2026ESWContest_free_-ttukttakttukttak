@@ -1,5 +1,6 @@
 package com.example.vibekey;
 
+import android.app.KeyguardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.text.TextUtils;
@@ -20,10 +21,36 @@ public final class AppLauncher {
     /**
      * 지정한 버튼 번호에 연결된 앱을 실행합니다.
      *
+     * <p><b>잠겨 있으면 먼저 잠금을 풉니다.</b> 이 기기는 목에 걸거나 주머니에 넣고
+     * 다니므로 단추를 누르는 순간 폰은 거의 항상 잠겨 있습니다. 그런데 우리가 여는
+     * 앱(전화·지도·사진)은 남의 앱이라 "잠금화면 위에 보이기"를 선언해 두지 않았습니다.
+     * 그냥 열면 <b>잠금화면 뒤에서</b> 열려, 어르신 눈에는 아무 일도 안 일어난 것과 같습니다.
+     * 그래서 잠겨 있을 때는 {@link LaunchGateActivity} 를 거쳐 잠금을 푼 뒤에 엽니다.
+     *
      * @param source 어디서 눌렀는지 (기록/루틴 알림용): "hardware", "routine", "screen"
-     * @return 실제로 앱을 열었으면 true
+     * @return 실제로 앱을 열었으면 true (잠금 해제를 기다리는 중이면 true)
      */
     public static boolean runSlot(Context context, int slot, String source) {
+        if (isKeyguardLocked(context)) {
+            LaunchGateActivity.open(context, slot, source);
+            return true;    // 실제 실행은 잠금이 풀린 뒤 문지기가 합니다
+        }
+        return runSlotNow(context, slot, source);
+    }
+
+    /** 지금 화면이 잠겨 있는지. 알 수 없으면 잠기지 않은 것으로 봅니다. */
+    private static boolean isKeyguardLocked(Context context) {
+        KeyguardManager keyguard =
+                (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+        return keyguard != null && keyguard.isKeyguardLocked();
+    }
+
+    /**
+     * 잠금 처리를 건너뛰고 지금 바로 실행합니다.
+     * {@link LaunchGateActivity} 가 잠금을 푼 뒤에 부릅니다 — 여기서 다시 runSlot 을
+     * 부르면 문지기가 또 열려 무한히 겹칩니다.
+     */
+    static boolean runSlotNow(Context context, int slot, String source) {
         Prefs prefs = Prefs.with(context);
         String type = prefs.getSlotActionType(slot);
         String label = prefs.getSlotLabel(slot);

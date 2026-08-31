@@ -129,6 +129,21 @@
             android:launchMode="singleTop" />
 
         <!--
+            잠금화면 위에서 잠깐 떴다 사라지는 문지기입니다.
+            단추가 여는 앱들은 남의 앱이라 "잠금화면 위에 보이기"를 선언해 두지 않아서,
+            그냥 열면 잠금화면 뒤에서 열립니다. 이 액티비티가 먼저 잠금을 풀고 나서 엽니다.
+            우리 앱만 부르므로 내보내지 않습니다.
+        -->
+        <activity
+            android:name=".LaunchGateActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:showOnLockScreen="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.VibeKey" />
+
+        <!--
             삼성 루틴·자동화 앱이 부르는 "화면 없는" 실행 창구입니다.
             루틴에서 앱 바로가기로 고르거나, vibekey:// 딥링크로 부를 수 있습니다.
         -->

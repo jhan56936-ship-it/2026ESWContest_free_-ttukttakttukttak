@@ -94,6 +94,11 @@
     <string name="onboard_done">다 됐어요. 이제 기기의 단추를 눌러 보세요.</string>
     <string name="settings_onboard_again">처음 설정 다시 하기</string>
 
+    <!-- 잠금화면 문지기 -->
+    <string name="gate_unlock">잠금을 풀면 열려요</string>
+    <string name="gate_opening">여는 중이에요…</string>
+    <string name="gate_cancelled">잠금을 풀어야 열 수 있어요.</string>
+
     <!-- 공통 -->
     <string name="ok">확인</string>
     <string name="cancel">취소</string>

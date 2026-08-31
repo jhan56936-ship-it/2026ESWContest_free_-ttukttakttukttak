@@ -2,8 +2,10 @@ package com.example.vibekey;
 
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
+import android.view.WindowManager;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.ImageView;
@@ -44,6 +46,7 @@ public class AiAssistantActivity extends BaseActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        showOverLockScreen();
         setContentView(R.layout.activity_ai);
 
         gemini = new GeminiClient(this);
@@ -102,6 +105,24 @@ public class AiAssistantActivity extends BaseActivity {
         }
 
         handleLaunchIntent(getIntent());
+    }
+
+    /**
+     * 잠금화면 위에서도 도우미가 보이게 합니다.
+     *
+     * <p>단추를 길게 누르는 순간에도 폰은 대개 잠겨 있습니다. 이건 우리 앱 화면이라
+     * 남의 앱과 달리 스스로 잠금화면 위에 올라올 수 있습니다. 다만 잠금을 풀지는
+     * 않습니다 — 도우미에게 말을 걸고 답을 듣는 것까지만 잠금화면에서 되고,
+     * 도우미가 다른 앱을 열어야 할 때는 그때 잠금 해제를 묻습니다.
+     */
+    private void showOverLockScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true);
+            setTurnScreenOn(true);
+        } else {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+                    | WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON);
+        }
     }
 
     @Override
