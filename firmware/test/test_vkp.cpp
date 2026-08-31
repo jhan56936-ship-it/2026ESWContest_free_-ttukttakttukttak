@@ -29,6 +29,34 @@ static void check(bool ok, const char* what) {
     }
 }
 
+// ---------------------------------------------------------------- 난수
+
+/*
+ * 손상 실험은 "언제 어디서 돌려도 같은 숫자가 나와야" 근거가 됩니다.
+ * 표준 라이브러리의 rand() 는 구현마다 수열이 달라(리눅스 glibc 와 윈도우 MSVC 가
+ * 서로 다릅니다) 다른 컴퓨터에서 돌리면 다른 값이 나옵니다.
+ * 그래서 난수 수열을 직접 들고 갑니다 — xorshift32, Marsaglia(2003).
+ * 씨앗이 같으면 어떤 컴파일러에서도 같은 수열이고, 따라서 같은 결과가 나옵니다.
+ */
+static uint32_t g_rngState = 1;
+
+static void rng_seed(uint32_t s) {
+    g_rngState = s ? s : 1;
+}
+
+static uint32_t rng_next() {
+    uint32_t x = g_rngState;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    g_rngState = x;
+    return x;
+}
+
+static uint32_t rng_below(uint32_t n) {
+    return rng_next() % n;
+}
+
 // ---------------------------------------------------------------- CRC
 
 static void test_crc16_known_vectors() {
@@ -169,12 +197,31 @@ static bool accepts_crc8(const uint8_t* buf, uint8_t n, uint8_t& button, uint8_t
     return true;
 }
 
+/** CRC16 프레임을 재동기화 없이 앞머리부터만 확인 — CRC8과 똑같은 조건으로 견주기 위한 것 */
+static bool accepts_crc16_flat(const uint8_t* buf, uint8_t n,
+                               uint8_t& button, uint8_t& type) {
+    if (n < OVERHEAD || buf[0] != STX) {
+        return false;
+    }
+    uint8_t len = buf[3];
+    if (len > MAX_PAYLOAD || (uint8_t)(len + OVERHEAD) != n) {
+        return false;
+    }
+    uint16_t want = (uint16_t)(buf[n - 3] | ((uint16_t)buf[n - 2] << 8));
+    if (crc16(buf + 1, (size_t)(3 + len)) != want || buf[n - 1] != ETX) {
+        return false;
+    }
+    type = buf[2];
+    button = len > 0 ? buf[4] : 0;
+    return true;
+}
+
 /**
  * 무작위 잡음 대량 주입 — 이 작품에서 가장 중요한 숫자를 뽑는 시험입니다.
  *
  * 버튼 한 번이 택시 요금으로 이어지므로, 물어야 할 질문은 "잡음을 걸러내는가"가
  * 아니라 "깨진 프레임이 실행으로 새어 나가는 비율이 얼마인가" 입니다.
- * 온전한 프레임을 손상시켜 10만 번씩 흘려보내고, 똑같은 손상을 CRC8(초기 설계)와
+ * 온전한 프레임을 손상시켜 200만 번씩 흘려보내고, 똑같은 손상을 CRC8(초기 설계)와
  * CRC16(현재 설계)에 동시에 먹여 비교합니다. 씨앗을 고정해 두어 항상 같은 숫자가 나옵니다.
  *
  * @param minFlips,maxFlips 뒤집을 비트 수의 범위
@@ -182,16 +229,20 @@ static bool accepts_crc8(const uint8_t* buf, uint8_t n, uint8_t& button, uint8_t
  */
 static void run_corruption_experiment(const char* title,
                                       int minFlips, int maxFlips, bool wholeFrame,
-                                      int& leak8Out, int& leak16Out) {
-    const int TRIALS = 100000;
-    std::srand(20260903);
+                                      int& leak8Out, int& leak16FlatOut,
+                                      int& leak16Out) {
+    // 10만 건으로는 CRC16 쪽 유출이 한 자리라 잡음과 구분되지 않습니다.
+    // 200만 건이면 두 설계의 비율이 안정적으로 읽히고, 실행에 10초 남짓 걸립니다.
+    const int TRIALS = 2000000;
+    rng_seed(20260903);
     int leak8 = 0;
+    int leak16flat = 0;
     int leak16 = 0;
 
     for (int t = 0; t < TRIALS; t++) {
-        uint8_t seq     = (uint8_t)(1 + (std::rand() % 255));
-        uint8_t button  = (uint8_t)(1 + (std::rand() % 3));
-        uint8_t payload[4] = {button, K_SHORT, (uint8_t)(std::rand() & 0xFF), 0x00};
+        uint8_t seq     = (uint8_t)(1 + rng_below(255));
+        uint8_t button  = (uint8_t)(1 + rng_below(3));
+        uint8_t payload[4] = {button, K_SHORT, (uint8_t)(rng_next() & 0xFF), 0x00};
 
         uint8_t f16[MAX_FRAME];
         uint8_t n16 = encode(seq, T_EVT_PRESS, payload, 4, f16);
@@ -203,12 +254,12 @@ static void run_corruption_experiment(const char* title,
         uint8_t span = wholeFrame ? (uint8_t)(n8 < n16 ? n8 : n16) : 8;
 
         // 같은 비트를 두 번 뒤집으면 원래대로 돌아가 손상이 아니게 되므로 겹치지 않게 고릅니다.
-        int flips = minFlips + (std::rand() % (maxFlips - minFlips + 1));
+        int flips = minFlips + (int)rng_below((uint32_t)(maxFlips - minFlips + 1));
         uint8_t used[16][2];
         int done = 0;
         while (done < flips) {
-            uint8_t pos = (uint8_t)(std::rand() % span);
-            uint8_t bitIdx = (uint8_t)(std::rand() % 8);
+            uint8_t pos = (uint8_t)rng_below(span);
+            uint8_t bitIdx = (uint8_t)rng_below(8);
             bool dup = false;
             for (int k = 0; k < done; k++) {
                 if (used[k][0] == pos && used[k][1] == bitIdx) {
@@ -242,12 +293,28 @@ static void run_corruption_experiment(const char* title,
         if (accepts_crc8(f8, n8, b8, t8) && t8 == T_EVT_PRESS && b8 >= 1 && b8 <= 3) {
             leak8++;
         }
+
+        // CRC16을 CRC8과 똑같은 조건(재동기화 없음)에서도 재 둡니다.
+        // 위의 leak16 은 실제로 기기에 올라가는 디코더라 재동기화까지 하므로,
+        // 손상된 바이트 안에서 프레임을 찾아낼 기회가 CRC8 쪽보다 오히려 많습니다.
+        // 두 값을 함께 두어야 "검사값을 한 바이트 늘린 효과"와
+        // "디코더가 더 부지런한 효과"를 섞지 않고 읽을 수 있습니다.
+        uint8_t b16 = 0, t16 = 0;
+        if (accepts_crc16_flat(f16, n16, b16, t16) &&
+            t16 == T_EVT_PRESS && b16 >= 1 && b16 <= 3) {
+            leak16flat++;
+        }
     }
 
     std::printf("  · %s (%d건)\n", title, TRIALS);
-    std::printf("      CRC8  : %6d건  (%.3f%%)\n", leak8,  100.0 * leak8  / TRIALS);
-    std::printf("      CRC16 : %6d건  (%.3f%%)\n", leak16, 100.0 * leak16 / TRIALS);
+    std::printf("      CRC8  (재동기화 없음) : %6d건  (%.4f%%)\n",
+                leak8, 100.0 * leak8 / TRIALS);
+    std::printf("      CRC16 (같은 조건)     : %6d건  (%.4f%%)\n",
+                leak16flat, 100.0 * leak16flat / TRIALS);
+    std::printf("      CRC16 (실제 디코더)   : %6d건  (%.4f%%)\n",
+                leak16, 100.0 * leak16 / TRIALS);
     leak8Out = leak8;
+    leak16FlatOut = leak16flat;
     leak16Out = leak16;
 }
 
@@ -256,11 +323,12 @@ static void run_corruption_experiment(const char* title,
  * 이 범위에서는 CRC8도 전부 걸러 냅니다. 즉 "CRC8은 부실하다"는 말은 사실이 아닙니다.
  */
 static void test_light_corruption_both_safe() {
-    int leak8 = 0, leak16 = 0;
+    int leak8 = 0, leak16flat = 0, leak16 = 0;
     run_corruption_experiment("1~3비트 손상 → 버튼 실행으로 새어 나간 수",
-                              1, 3, false, leak8, leak16);
-    check(leak8 == 0,  "1~3비트 손상은 CRC8도 모두 걸러 낸다");
-    check(leak16 == 0, "1~3비트 손상은 CRC16도 모두 걸러 낸다");
+                              1, 3, false, leak8, leak16flat, leak16);
+    check(leak8 == 0,      "1~3비트 손상은 CRC8도 모두 걸러 낸다");
+    check(leak16flat == 0, "1~3비트 손상은 CRC16도 모두 걸러 낸다");
+    check(leak16 == 0,     "1~3비트 손상은 실제 디코더로 재도 0건이다");
 }
 
 /**
@@ -270,11 +338,17 @@ static void test_light_corruption_both_safe() {
  * "요금이 발생하는 오실행"의 확률을 두 자릿수 낮추는 거래라서 올릴 값어치가 있습니다.
  */
 static void test_heavy_corruption_crc16_is_stronger() {
-    int leak8 = 0, leak16 = 0;
+    int leak8 = 0, leak16flat = 0, leak16 = 0;
     run_corruption_experiment("4~10비트 손상(프레임 전체) → 버튼 실행으로 새어 나간 수",
-                              4, 10, true, leak8, leak16);
-    check(leak16 == 0, "여러 비트가 망가져도 CRC16은 실행으로 새지 않는다");
-    check(leak8 > leak16, "CRC16으로 올린 것이 실제로 더 안전하다 (숫자로 확인)");
+                              4, 10, true, leak8, leak16flat, leak16);
+    // 검사값이 우연히 들어맞는 일은 확률이지 0이 아닙니다. 그래서 "0건"이 아니라
+    // "얼마나 드문가"를 단언합니다. 같은 조건(재동기화 없음)에서 CRC16은 CRC8보다
+    // 검사값이 한 바이트 길어 우연 일치가 256분의 1로 줄어듭니다.
+    check(leak8 > 0, "이 손상 범위에서는 CRC8이 실제로 실행을 새어 보낸다");
+    check(leak16flat * 5 <= leak8,
+          "같은 조건에서 CRC16은 CRC8보다 최소 5배 적게 샌다");
+    check(leak16 < leak8,
+          "재동기화까지 하는 실제 디코더로 재도 CRC16이 CRC8보다 적게 샌다");
 }
 
 static void test_resync_after_garbage() {

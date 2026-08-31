@@ -7,10 +7,10 @@ import java.util.Locale;
  *
  * 두 가지 경로를 모두 받습니다.
  * <ul>
- *   <li><b>프레임</b> {@link #fromFrame(FrameCodec.Frame)} — 3.0 펌웨어. CRC·SEQ가 붙어 있어
+ *   <li><b>프레임</b> {@link #fromFrame(FrameCodec.Frame)} — 현재 펌웨어. CRC·SEQ가 붙어 있어
  *       깨진 신호가 실행으로 이어지지 않습니다. 어느 버튼인지, 짧게인지 길게인지,
  *       접점에서 송출까지 몇 마이크로초 걸렸는지까지 함께 옵니다.</li>
- *   <li><b>평문 한 줄</b> {@link #parse(String)} — 2.0 이하 펌웨어("True", "Button1", "AI").
+ *   <li><b>평문 한 줄</b> {@link #parse(String)} — 옛 평문 펌웨어("True", "Button1", "AI").
  *       펌웨어를 아직 안 올린 기기도 그대로 쓸 수 있도록 남겨 두었습니다.</li>
  * </ul>
  *
@@ -75,7 +75,7 @@ public final class SignalParser {
     }
 
     /**
-     * 3.0 펌웨어가 보낸 프레임을 해석합니다.
+     * 현재 펌웨어가 보낸 프레임을 해석합니다.
      *
      * 여기서 하는 일은 "번역"뿐입니다. 깨진 프레임을 걸러 내는 일은 {@link FrameCodec.Decoder}가,
      * 같은 누름을 두 번 실행하지 않는 일은 SEQ를 보는 {@link UsbSerialService}가 맡습니다.
